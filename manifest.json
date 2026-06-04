@@ -1,0 +1,19 @@
+{
+  "name": "MARIA the T-REX — Kush Run",
+  "short_name": "Maria T-Rex",
+  "description": "Maria the T-Rex collects weed and outruns the cops across Kuala Lumpur, the desert, lava and neon nights.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "display_override": ["fullscreen", "standalone"],
+  "orientation": "landscape",
+  "background_color": "#05070d",
+  "theme_color": "#0b0f1a",
+  "categories": ["games", "entertainment"],
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}
