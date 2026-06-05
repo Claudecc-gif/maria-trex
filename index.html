@@ -24,10 +24,7 @@
   }
   #game {
     image-rendering:pixelated;
-    box-shadow:0 0 0 4px #0a0a12, 0 26px 80px rgba(0,0,0,.7);
-    border-radius:8px;
-    width:min(100vw, calc(100vh * 16 / 9));
-    height:auto; aspect-ratio:16/9; max-width:100vw; max-height:100vh;
+    width:100vw; height:100vh; display:block;   /* fill the screen in any orientation */
   }
   .touch { position:fixed; bottom:14px; display:none; user-select:none; -webkit-user-select:none; z-index:5; }
   .pad { display:flex; gap:10px; }
@@ -79,8 +76,19 @@
 
 const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
-const VW = canvas.width, VH = canvas.height;
-ctx.imageSmoothingEnabled = false;
+// Fixed virtual HEIGHT, virtual WIDTH follows the screen aspect → fills portrait & landscape,
+// no letterbox, no distortion (canvas aspect always matches the screen).
+const VH = 540;
+let VW = 960;
+function fitCanvas(){
+  const w = window.innerWidth || 960, h = window.innerHeight || 540;
+  VW = Math.max(280, Math.round(VH * (w / h)));
+  canvas.width = VW; canvas.height = VH;
+  ctx.imageSmoothingEnabled = false;
+}
+fitCanvas();
+addEventListener("resize", fitCanvas);
+addEventListener("orientationchange", fitCanvas);
 
 // ---------------- constants ----------------
 const GROUND_TOP = VH - 84;
@@ -177,6 +185,8 @@ const Board = {
       this.status="online";
     }catch(e){ this.status="offline"; this.cache=this.normalize(this.localAll()); }
   },
+  same(a,b){ if(a.length!==b.length) return false; for(let i=0;i<a.length;i++){ const x=a[i],y=b[i]; if(x.name!==y.name||x.score!==y.score||x.dist!==y.dist||(x.hidden||0)!==(y.hidden||0)) return false; } return true; },
+  async readRemote(){ try{ const r=await fetch(this.url(),{cache:"no-store"}); if(r.ok){ const d=await r.json(); return Array.isArray(d)?d:(d&&d.scores)||[]; } }catch(e){} return null; },
   async submit(entry){
     const local=this.localAll(); local.push(entry); this.localSet(local);   // instant + offline-proof
     this.cache=this.normalize(local);
@@ -184,13 +194,15 @@ const Board = {
     if (!this.global()) return;
     this.status="loading";
     try{
-      let remote=[];
-      try{ const r=await fetch(this.url(),{cache:"no-store"}); if(r.ok){ const d=await r.json(); remote=Array.isArray(d)?d:(d&&d.scores)||[]; } }catch(e){}
-      const merged=this.normalize(remote.concat(local));
-      // write with one retry so a flaky network doesn't drop the score
-      let ok=false;
-      for (let a=0; a<2 && !ok; a++){
-        try{ const w=await fetch(this.url(),{ method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({scores:merged}) }); ok=w.ok; }catch(e){}
+      // reconcile loop: read → merge (keeps the HIGHEST per name) → write → re-read; repeat until
+      // the server already contains our merged set, so a concurrent write can never drop a high score.
+      let merged=this.normalize(local), ok=false;
+      for (let pass=0; pass<3; pass++){
+        const remote=await this.readRemote();
+        const combined=this.normalize((remote||[]).concat(merged));
+        if (remote!==null && this.same(this.normalize(remote), combined)){ merged=combined; ok=true; break; }   // already in sync
+        merged=combined;
+        try{ const w=await fetch(this.url(),{ method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({scores:merged}) }); ok=ok||w.ok; }catch(e){}
       }
       this.cache=merged; this.status= ok?"online":"offline";
     }catch(e){ this.status="offline"; }
@@ -307,7 +319,13 @@ function openShop(){ G.scene="shop"; }
 
 // ---------------- name entry (DOM input overlaid on the canvas) ----------------
 const nameInput = document.getElementById("nameInput");
-const NAME_BOX = { x:120, y:268, w:322, h:42 };   // canvas coords; must match drawTitle
+// name-field rect in canvas coords — responsive, must match the layout in drawTitle
+function nameBoxRect(){
+  const wide = VW>=600;
+  const pad=18, w=Math.min(wide?920:460, VW-2*pad), x0=(VW-w)/2;
+  if (wide){ const colW=(w-3*pad)/2, Lx=x0+pad; return {x:Lx+10, y:214, w:colW-20, h:42}; }
+  return {x:x0+pad+8, y:180, w:w-2*pad-16, h:40};
+}
 nameInput.value = DB.name;
 nameInput.addEventListener("input", ()=>{ DB.name = nameInput.value; });
 nameInput.addEventListener("keydown", (e)=>{
@@ -318,12 +336,14 @@ function syncNameInput(){
   if (G.scene!=="title"){ if(nameInput.style.display!=="none") nameInput.style.display="none"; return; }
   const r=canvas.getBoundingClientRect();
   const sx=r.width/VW, sy=r.height/VH;
+  const B=nameBoxRect();
   nameInput.style.display="block";
-  nameInput.style.left  = (r.left + NAME_BOX.x*sx)+"px";
-  nameInput.style.top   = (r.top  + NAME_BOX.y*sy)+"px";
-  nameInput.style.width = (NAME_BOX.w*sx)+"px";
-  nameInput.style.height= (NAME_BOX.h*sy)+"px";
-  nameInput.style.fontSize = Math.max(11, Math.round(16*sy))+"px";
+  nameInput.style.left  = (r.left + B.x*sx)+"px";
+  nameInput.style.top   = (r.top  + B.y*sy)+"px";
+  nameInput.style.width = (B.w*sx)+"px";
+  nameInput.style.height= (B.h*sy)+"px";
+  nameInput.style.fontSize = Math.max(11, Math.round(15*sy))+"px";
+  nameInput.style.borderColor = (needName>0 && Math.floor(frameCount/6)%2===0) ? "#ff5a5a" : "#7CFC6A";
 }
 
 // ---------------- audio ----------------
@@ -445,7 +465,12 @@ function resetWorld(forDemo){
   demoMode=!!forDemo;
 }
 
+let needName=0;
 function startGame(){
+  if (!DB.name || !DB.name.trim()){      // must enter a name first
+    needName=90; try{ nameInput.focus(); }catch(e){} sfx.hurt(); G.scene="title";
+    return;
+  }
   resetWorld(false);
   keys.jump=false; jumpTouchId=null;   // no stale held-jump from a menu tap
   G.scene="play"; G.paused=false;
@@ -1043,8 +1068,7 @@ function render(){
   ctx.restore();
 
   drawWeather(th);
-  if (G.scene==="play"||G.scene==="paused") drawInsanity();
-  drawHUD();
+  if (G.scene==="play"||G.scene==="paused"){ drawInsanity(); drawHUD(); }
   drawBanners();
   if (levelFlash>0){ ctx.fillStyle=`rgba(255,255,255,${levelFlash/120})`; ctx.fillRect(0,0,VW,VH); }
   if (flash>0){ ctx.fillStyle=`rgba(255,255,255,${flash/30})`; ctx.fillRect(0,0,VW,VH); }
@@ -1756,7 +1780,23 @@ function drawCastleEntry(){
 }
 
 // ----- HUD -----
+function drawHUDCompact(){
+  ctx.save();
+  ctx.fillStyle="rgba(8,12,24,.55)"; roundRect(6,6,VW-12,28,8); ctx.fill();
+  ctx.fillStyle="#fff"; ctx.font="bold 15px 'Trebuchet MS'"; ctx.textBaseline="middle"; ctx.textAlign="left";
+  ctx.fillText(score+"🌿",12,20);
+  ctx.fillStyle="#cfe0ff"; ctx.font="12px 'Trebuchet MS'"; ctx.fillText(distance+"m",64,20);
+  for(let i=0;i<Math.min(lives,MAX_LIVES);i++) miniTrex(112+i*18,11);
+  // police bar + power-up tags
+  const gap=clamp(player.x-chaseX,0,900), frac=clamp(gap/900,0,1);
+  ctx.fillStyle="rgba(8,12,24,.5)"; roundRect(6,38,VW-12,8,4); ctx.fill();
+  ctx.fillStyle= frac>0.5?"#36d36b":frac>0.25?"#ffd54a":"#ff2a2a"; roundRect(6,38,(VW-12)*frac,8,4); ctx.fill();
+  let tags=[]; if(speedTimer>0)tags.push("💨"); if(starTimer>0)tags.push("⭐"); if(flyTimer>0)tags.push("🪽"); if(ammo>0)tags.push("🚬"+ammo);
+  if(tags.length){ ctx.textAlign="left"; ctx.font="12px 'Trebuchet MS'"; ctx.fillStyle="#9fe89f"; ctx.fillText(tags.join(" "), 8, 60); }
+  ctx.textBaseline="alphabetic"; ctx.textAlign="left"; ctx.restore();
+}
 function drawHUD(){
+  if (VW<720){ drawHUDCompact(); return; }
   ctx.save();
   // 🏰 logo — upper middle of the game
   ctx.save(); ctx.globalAlpha=0.92; drawLogo(VW/2, 33, 0.22, frameCount); ctx.restore();
@@ -1934,9 +1974,9 @@ function drawIntro(){
   // falling kush leaves
   for(let i=0;i<22;i++){ const x=((i*149 + introT*1.2)%(VW+60))-30; const y=((i*83 + introT*2.4)%(VH+60))-30;
     ctx.save(); ctx.translate(x,y); ctx.rotate(introT*0.03+i); ctx.globalAlpha=0.5; ctx.scale(0.5,0.5); drawLeaf7(); ctx.restore(); }
-  // logo slam-in
+  // logo slam-in (scaled to fit the screen width)
   const appear=clamp(introT/34,0,1);
-  const sc=1.0*easeOutBack(appear);
+  const sc=Math.min(1, VW/620)*easeOutBack(appear);
   const a=clamp(introT/16,0,1);
   ctx.save(); ctx.globalAlpha=a; drawLogo(VW/2, VH/2-26, Math.max(0.05,sc), introT); ctx.restore();
   if (introT>40){ ctx.globalAlpha=clamp((introT-40)/24,0,1); ctx.textAlign="center";
@@ -1971,64 +2011,82 @@ function drawBoardRows(x, y, w, count, hiName){
 
 function drawTitle(){
   ctx.fillStyle="rgba(6,10,20,.55)"; ctx.fillRect(0,0,VW,VH);
-  panel(VW/2-410,16,820,508);
-  // logo header
-  drawLogo(VW/2, 96, 0.52, frameCount);
-  ctx.textAlign="center";
-  ctx.fillStyle="#dfe9ff"; ctx.font="13px 'Trebuchet MS'";
-  ctx.fillText("🌿 kush = 1 pt  ·  🏃 outrun the police  ·  💵 bribe at 100 or get hanged",VW/2,186);
-  ctx.fillText("💨 bong=speed · ⭐ cali bud=invincible · 🚬 cannon · 🪽 wings up top · 🏰 each level = a Kush Castle",VW/2,206);
-  // dividers
-  ctx.strokeStyle="rgba(124,252,106,.22)"; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(90,222); ctx.lineTo(870,222); ctx.stroke();
-  ctx.strokeStyle="rgba(255,255,255,.10)"; ctx.beginPath(); ctx.moveTo(485,240); ctx.lineTo(485,500); ctx.stroke();
+  const wide = VW>=600;
+  const pad=18, w=Math.min(wide?920:460, VW-2*pad), x0=(VW-w)/2, cx=VW/2;
+  panel(x0, 12, w, VH-24);
+  drawLogo(cx, wide?78:60, Math.min(wide?0.5:0.42, w/(wide?1060:560)), frameCount);
+  ctx.textAlign="center"; ctx.fillStyle="#dfe9ff"; ctx.font=(wide?"12px":"10px")+" 'Trebuchet MS'";
+  ctx.fillText("🌿 kush · 🏃 outrun cops · 💵 bribe@100 · 🪽 wings · 🏰 Kush Castles", cx, wide?150:130);
+  const empty=!(DB.name&&DB.name.trim());
+  const nameCol = (empty&&(needName>0||Math.floor(frameCount/24)%2===0)) ? "#ff6b6b" : "#7CFC6A";
 
-  // LEFT column — name entry + play
-  const Lcx=281;
-  ctx.fillStyle="#7CFC6A"; ctx.font="bold 14px 'Trebuchet MS'"; ctx.textAlign="center"; ctx.fillText("YOUR NAME",Lcx,256);
-  // (the real text field is the DOM #nameInput overlaid here by syncNameInput)
-  const sk=curSkin();
-  ctx.fillStyle="#9fb4d6"; ctx.font="12px 'Trebuchet MS'";
-  ctx.fillText("Skin: "+sk.name+"  ·  Bank: "+DB.bank+"🌿  ·  Best: "+DB.best+"🌿",Lcx,344);
-  ctx.textAlign="left";
-  button(120,360,322,52,"▶  PLAY",()=>startGame());
-  button(120,424,322,44,"🛍  KUSH SHOP",()=>openShop(),"rgba(255,213,74,.18)");
-  ctx.textAlign="center"; ctx.fillStyle="#8298ba"; ctx.font="11px 'Trebuchet MS'";
-  ctx.fillText("← → run · SPACE jump · F shoot · M·N·P",Lcx,488);
-
-  // RIGHT column — high-score list
-  const Rcx=684;
-  ctx.fillStyle="#ffd54a"; ctx.font="bold 20px 'Trebuchet MS'"; ctx.fillText("🏆 HIGH SCORES",Rcx,256);
-  ctx.fillStyle="#8fa6c8"; ctx.font="12px 'Trebuchet MS'"; ctx.fillText(Board.statusLine(),Rcx,276);
-  drawBoardRows(512,300,344,9,null);
-
-  ctx.fillStyle="#fff"; ctx.globalAlpha=0.6+0.4*Math.sin(frameCount*0.12); ctx.font="bold 15px 'Trebuchet MS'"; ctx.textAlign="center";
-  ctx.fillText("Press ENTER / tap to start",VW/2,512); ctx.globalAlpha=1; ctx.textAlign="left";
+  if (wide){
+    const colW=(w-3*pad)/2, Lx=x0+pad, Rx=x0+pad+colW+pad, Lcx=Lx+colW/2, Rcx=Rx+colW/2;
+    ctx.strokeStyle="rgba(255,255,255,.10)"; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(cx,172); ctx.lineTo(cx,VH-40); ctx.stroke();
+    ctx.fillStyle=nameCol; ctx.font="bold 14px 'Trebuchet MS'"; ctx.textAlign="center"; ctx.fillText(empty?"ENTER YOUR NAME ↓":"YOUR NAME", Lcx, 198);
+    const sk=curSkin(); ctx.fillStyle="#9fb4d6"; ctx.font="12px 'Trebuchet MS'"; ctx.fillText("Skin: "+sk.name+" · Best: "+DB.best+"🌿", Lcx, 300);
+    ctx.textAlign="left";
+    button(Lx, 320, colW, 50, "▶  PLAY", ()=>startGame());
+    button(Lx, 380, colW, 40, "🛍  KUSH SHOP", ()=>openShop(), "rgba(255,213,74,.18)");
+    ctx.textAlign="center"; ctx.fillStyle="#8298ba"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText("← → run · SPACE jump · F shoot", Lcx, 440);
+    ctx.fillStyle="#ffd54a"; ctx.font="bold 18px 'Trebuchet MS'"; ctx.fillText("🏆 HIGH SCORES", Rcx, 196);
+    ctx.fillStyle="#8fa6c8"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText(Board.statusLine(), Rcx, 214);
+    drawBoardRows(Rx+8, 240, colW-16, 9, null);
+  } else {
+    const ix=x0+pad, iw=w-2*pad;
+    ctx.fillStyle=nameCol; ctx.font="bold 13px 'Trebuchet MS'"; ctx.textAlign="center"; ctx.fillText(empty?"ENTER YOUR NAME ↓":"YOUR NAME", cx, 166);
+    ctx.textAlign="left";
+    button(ix, 228, iw, 44, "▶  PLAY", ()=>startGame());
+    button(ix, 278, iw, 38, "🛍  KUSH SHOP", ()=>openShop(), "rgba(255,213,74,.18)");
+    ctx.textAlign="center"; ctx.fillStyle="#ffd54a"; ctx.font="bold 15px 'Trebuchet MS'"; ctx.fillText("🏆 HIGH SCORES", cx, 344);
+    ctx.fillStyle="#8fa6c8"; ctx.font="10px 'Trebuchet MS'"; ctx.fillText(Board.statusLine(), cx, 360);
+    drawBoardRows(ix+4, 378, iw-8, 5, null);
+  }
+  ctx.fillStyle="#fff"; ctx.globalAlpha=0.6+0.4*Math.sin(frameCount*0.12); ctx.font="bold 14px 'Trebuchet MS'"; ctx.textAlign="center";
+  ctx.fillText(empty?"enter a name, then tap to start":"tap / ENTER to start", cx, VH-14); ctx.globalAlpha=1; ctx.textAlign="left";
 }
 
+let shopPage=0;
 function drawShop(){
-  ctx.fillStyle="rgba(6,10,20,.78)"; ctx.fillRect(0,0,VW,VH);
-  panel(40,22,VW-80,500,"rgba(255,213,74,.5)");
-  ctx.textAlign="center"; ctx.fillStyle="#ffd54a"; ctx.font="bold 30px 'Trebuchet MS'"; ctx.fillText("🛍  KUSH SHOP",VW/2,58);
-  ctx.fillStyle="#fff"; ctx.font="15px 'Trebuchet MS'"; ctx.fillText("Bank: "+DB.bank+" 🌿   ·   12 skins — bank kush by finishing runs",VW/2,82);
+  ctx.fillStyle="rgba(6,10,20,.82)"; ctx.fillRect(0,0,VW,VH);
+  const w=Math.min(VW-16, 900), x0=VW/2-w/2, cx=VW/2;
+  panel(x0,16,w,VH-32,"rgba(255,213,74,.5)");
+  ctx.textAlign="center"; ctx.fillStyle="#ffd54a"; ctx.font="bold 26px 'Trebuchet MS'"; ctx.fillText("🛍  KUSH SHOP",cx,48);
   ctx.textAlign="left";
   const owned=DB.owned, sel=DB.skin;
-  const cols=4, cw=186, ch=112, gap=14, startX=(VW-(cols*cw+(cols-1)*gap))/2, startY=104;
-  SKINS.forEach((s,i)=>{
-    const cx=startX+(i%cols)*(cw+gap), cy=startY+Math.floor(i/cols)*(ch+gap);
+  const gap=14, inner=w-32;
+  const cols=Math.max(2, Math.min(4, Math.floor((inner+gap)/(170+gap))));
+  const cw=Math.floor((inner-(cols-1)*gap)/cols), ch=112;
+  const startX=x0+16, startY=88, bottomY=VH-48;
+  const rowsFit=Math.max(1, Math.floor((bottomY-startY+gap)/(ch+gap)));
+  const perPage=cols*rowsFit, pages=Math.ceil(SKINS.length/perPage);
+  shopPage=clamp(shopPage,0,pages-1);
+  ctx.textAlign="center"; ctx.fillStyle="#fff"; ctx.font="13px 'Trebuchet MS'";
+  ctx.fillText("Bank: "+DB.bank+" 🌿"+(pages>1?("   ·   page "+(shopPage+1)+"/"+pages):""),cx,70); ctx.textAlign="left";
+  const startIdx=shopPage*perPage;
+  for (let idx=0; idx<perPage; idx++){
+    const i=startIdx+idx; if(i>=SKINS.length) break;
+    const s=SKINS[i], col=idx%cols, row=Math.floor(idx/cols);
+    const cxp=startX+col*(cw+gap), cyp=startY+row*(ch+gap);
     const isOwned=owned.includes(s.id), isSel=sel===s.id;
-    ctx.fillStyle= isSel?"rgba(124,252,106,.22)":"rgba(255,255,255,.06)"; roundRect(cx,cy,cw,ch,12); ctx.fill();
-    ctx.strokeStyle= isSel?"#7CFC6A": isOwned?"rgba(255,255,255,.5)":"rgba(255,213,74,.5)"; ctx.lineWidth=2; roundRect(cx,cy,cw,ch,12); ctx.stroke();
-    drawSkinPreview(s, cx+cw/2, cy+52);
-    ctx.textAlign="center"; ctx.fillStyle="#fff"; ctx.font="bold 16px 'Trebuchet MS'"; ctx.fillText(s.name,cx+cw/2,cy+84);
-    let label, col;
-    if (isSel){ label="EQUIPPED"; col="#7CFC6A"; }
-    else if (isOwned){ label="EQUIP"; col="#cfe0ff"; }
-    else { label=(DB.bank>=s.cost?"BUY · ":"NEED ")+s.cost+" 🌿"; col=DB.bank>=s.cost?"#ffd54a":"#ff8a8a"; }
-    ctx.fillStyle=col; ctx.font="bold 14px 'Trebuchet MS'"; ctx.fillText(label,cx+cw/2,cy+103);
+    ctx.fillStyle= isSel?"rgba(124,252,106,.22)":"rgba(255,255,255,.06)"; roundRect(cxp,cyp,cw,ch,12); ctx.fill();
+    ctx.strokeStyle= isSel?"#7CFC6A": isOwned?"rgba(255,255,255,.5)":"rgba(255,213,74,.5)"; ctx.lineWidth=2; roundRect(cxp,cyp,cw,ch,12); ctx.stroke();
+    drawSkinPreview(s, cxp+cw/2, cyp+52);
+    ctx.textAlign="center"; ctx.fillStyle="#fff"; ctx.font="bold 15px 'Trebuchet MS'"; ctx.fillText(s.name,cxp+cw/2,cyp+84);
+    let label,c2;
+    if (isSel){ label="EQUIPPED"; c2="#7CFC6A"; }
+    else if (isOwned){ label="EQUIP"; c2="#cfe0ff"; }
+    else { label=(DB.bank>=s.cost?"BUY · ":"NEED ")+s.cost+" 🌿"; c2=DB.bank>=s.cost?"#ffd54a":"#ff8a8a"; }
+    ctx.fillStyle=c2; ctx.font="bold 13px 'Trebuchet MS'"; ctx.fillText(label,cxp+cw/2,cyp+103);
     ctx.textAlign="left";
-    uiButtons.push({x:cx,y:cy,w:cw,h:ch,action:()=>buyOrEquip(s)});
-  });
-  button(VW/2-90,VH-38,180,32,"◀  BACK",()=>{G.scene="title";},"rgba(255,255,255,.14)");
+    uiButtons.push({x:cxp,y:cyp,w:cw,h:ch,action:()=>buyOrEquip(s)});
+  }
+  const by=VH-40;
+  if (pages>1){
+    button(x0+16,by,52,30,"◀",()=>{shopPage=clamp(shopPage-1,0,pages-1);},"rgba(255,255,255,.14)");
+    button(x0+w-68,by,52,30,"▶",()=>{shopPage=clamp(shopPage+1,0,pages-1);},"rgba(255,255,255,.14)");
+  }
+  button(cx-44,by,88,30,"BACK",()=>{G.scene="title";},"rgba(255,255,255,.14)");
 }
 function drawSkinPreview(s,cx,cy){
   ctx.save(); ctx.translate(cx-18,cy-26); const w=40,h=44;
@@ -2050,36 +2108,45 @@ function buyOrEquip(s){
 
 function drawGameOver(){
   ctx.fillStyle="rgba(6,10,20,.66)"; ctx.fillRect(0,0,VW,VH);
-  panel(VW/2-300,58,600,448);
+  const w=Math.min(600,VW-16), x0=VW/2-w/2, cx=VW/2;
+  panel(x0,52,w,VH-72);
   ctx.textAlign="center";
   const hanged=overReason==="hanged";
-  ctx.fillStyle="#ff7b7b"; ctx.font="bold 40px 'Trebuchet MS'";
-  ctx.fillText(hanged?"HANGED!":(overReason==="lava"?"BURNED!":(overReason==="fell"?"WIPEOUT!":"BUSTED!")),VW/2,112);
-  ctx.fillStyle="#fff"; ctx.font="bold 24px 'Trebuchet MS'"; ctx.fillText(`${score} weed  ·  ${distance} m`,VW/2,148);
-  ctx.fillStyle="#9fe89f"; ctx.font="14px 'Trebuchet MS'"; ctx.fillText(`+${score}🌿 banked · Bank now ${DB.bank}`,VW/2,174);
+  ctx.fillStyle="#ff7b7b"; ctx.font="bold 36px 'Trebuchet MS'";
+  ctx.fillText(hanged?"HANGED!":(overReason==="lava"?"BURNED!":(overReason==="fell"?"WIPEOUT!":"BUSTED!")),cx,104);
+  ctx.fillStyle="#fff"; ctx.font="bold 22px 'Trebuchet MS'"; ctx.fillText(`${score} kush  ·  ${distance} m`,cx,140);
+  ctx.fillStyle="#9fe89f"; ctx.font="13px 'Trebuchet MS'"; ctx.fillText(`+${score}🌿 banked · Bank ${DB.bank}`,cx,164);
   const nb=(score>=DB.best&&score>0)?"NEW BEST! ":"";
-  ctx.fillStyle="#ffd54a"; ctx.font="14px 'Trebuchet MS'"; ctx.fillText(`${nb}Best ${DB.best}🌿 · ${DB.bestDist} m`,VW/2,196);
-  // high-score list
-  ctx.strokeStyle="rgba(124,252,106,.22)"; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(210,212); ctx.lineTo(750,212); ctx.stroke();
+  ctx.fillStyle="#ffd54a"; ctx.font="13px 'Trebuchet MS'"; ctx.fillText(`${nb}Best ${DB.best}🌿 · ${DB.bestDist} m`,cx,184);
   const rank=Board.rankOf(Board.lastName);
-  ctx.fillStyle="#ffd54a"; ctx.font="bold 18px 'Trebuchet MS'";
-  ctx.fillText("🏆 HIGH SCORES"+(rank>=0?"  ·  you placed #"+(rank+1):""),VW/2,236);
-  ctx.fillStyle="#8fa6c8"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText(Board.statusLine(),VW/2,254);
-  drawBoardRows(250,272,460,6,Board.lastName);
+  ctx.fillStyle="#ffd54a"; ctx.font="bold 17px 'Trebuchet MS'"; ctx.fillText("🏆 HIGH SCORES"+(rank>=0?" · #"+(rank+1):""),cx,214);
+  ctx.fillStyle="#8fa6c8"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText(Board.statusLine(),cx,231);
+  drawBoardRows(x0+22,252,w-44,6,Board.lastName);
   ctx.textAlign="left";
-  button(VW/2-250,408,240,46,"↻  RUN AGAIN",()=>startGame());
-  button(VW/2+10,408,240,46,"🛍  SHOP",()=>openShop(),"rgba(255,213,74,.18)");
-  ctx.textAlign="center"; ctx.fillStyle="#fff"; ctx.globalAlpha=0.6+0.4*Math.sin(frameCount*0.12); ctx.font="bold 15px 'Trebuchet MS'";
-  ctx.fillText("Press ENTER / tap to run again",VW/2,484); ctx.globalAlpha=1; ctx.textAlign="left";
+  const bw=(w-3*16)/2, bx=x0+16;
+  button(bx, 396, bw, 44, "↻  RUN AGAIN", ()=>startGame());
+  button(bx+bw+16, 396, bw, 44, "🛍  SHOP", ()=>openShop(), "rgba(255,213,74,.18)");
+  ctx.textAlign="center"; ctx.fillStyle="#fff"; ctx.globalAlpha=0.6+0.4*Math.sin(frameCount*0.12); ctx.font="bold 14px 'Trebuchet MS'";
+  ctx.fillText("tap / ENTER to run again",cx,VH-30); ctx.globalAlpha=1; ctx.textAlign="left";
 }
 // small in-game button (top, clear of the controls) → back to the main menu
-function drawMenuButton(){ button(VW/2+76, 8, 104, 28, "≡ MENU", quitToMenu, "rgba(8,12,24,.62)"); }
+function drawMenuButton(){
+  if (VW<720) button(VW-58, 8, 50, 22, "≡", quitToMenu, "rgba(8,12,24,.66)");
+  else button(VW/2+76, 8, 104, 28, "≡ MENU", quitToMenu, "rgba(8,12,24,.62)");
+}
 function drawPaused(){
   ctx.fillStyle="rgba(6,10,20,.62)"; ctx.fillRect(0,0,VW,VH);
-  ctx.textAlign="center"; ctx.fillStyle="#fff"; ctx.font="bold 40px 'Trebuchet MS'"; ctx.fillText("PAUSED",VW/2,VH/2-54); ctx.textAlign="left";
-  button(VW/2-220,VH/2-8,200,50,"▶  RESUME",()=>togglePause());
-  button(VW/2+20,VH/2-8,200,50,"≡  MAIN MENU",()=>quitToMenu(),"rgba(255,255,255,.14)");
-  ctx.textAlign="center"; ctx.font="14px 'Trebuchet MS'"; ctx.fillStyle="#9fb4d6"; ctx.fillText("P to resume",VW/2,VH/2+78); ctx.textAlign="left";
+  const cx=VW/2;
+  ctx.textAlign="center"; ctx.fillStyle="#fff"; ctx.font="bold 36px 'Trebuchet MS'"; ctx.fillText("PAUSED",cx,VH/2-64); ctx.textAlign="left";
+  if (VW>=520){
+    button(cx-220,VH/2-8,200,50,"▶  RESUME",()=>togglePause());
+    button(cx+20,VH/2-8,200,50,"≡  MAIN MENU",()=>quitToMenu(),"rgba(255,255,255,.14)");
+  } else {
+    const bw=Math.min(280,VW-40), bx=cx-bw/2;
+    button(bx,VH/2-22,bw,46,"▶  RESUME",()=>togglePause());
+    button(bx,VH/2+34,bw,46,"≡  MAIN MENU",()=>quitToMenu(),"rgba(255,255,255,.14)");
+  }
+  ctx.textAlign="center"; ctx.font="13px 'Trebuchet MS'"; ctx.fillStyle="#9fb4d6"; ctx.fillText("P to resume",cx,VH-30); ctx.textAlign="left";
 }
 
 // ======================================================================
@@ -2089,7 +2156,7 @@ let last=performance.now(), accT=0;
 function loop(now){
   accT+=now-last; last=now; if(accT>250)accT=250;
   while (accT>=FIXED_DT){
-    if (G.scene==="play") update(); else { frameCount++; if (G.scene==="intro") introT++; }
+    if (G.scene==="play") update(); else { frameCount++; if (G.scene==="intro") introT++; if (needName>0) needName--; }
     accT-=FIXED_DT;
   }
   // keep the global board fresh on menus so new high scores show up for everyone
