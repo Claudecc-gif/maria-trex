@@ -36,7 +36,8 @@
   .btn:active, .btn.on { background:rgba(255,255,255,.40); border-color:rgba(255,255,255,.7); }
   #leftCtl { left:14px; }
   #rightCtl { right:14px; }
-  #jumpBtn { width:80px; height:80px; font-size:28px; }
+  #fireBtn { width:88px; height:88px; font-size:34px; }
+  #jumpBtn { width:112px; height:112px; font-size:40px; }
   #nameInput {
     position:fixed; display:none; z-index:6; box-sizing:border-box;
     font-family:"Trebuchet MS",system-ui,sans-serif; font-weight:bold; text-align:center;
@@ -64,7 +65,7 @@
     <div class="btn" data-key="right">▶</div>
   </div></div>
   <div id="rightCtl" class="touch"><div class="pad">
-    <div class="btn" data-key="fire">🚬</div>
+    <div class="btn" id="fireBtn" data-key="fire">🚬</div>
     <div class="btn" id="jumpBtn" data-key="jump">⤒</div>
   </div></div>
   <input id="nameInput" maxlength="10" placeholder="ENTER YOUR NAME" autocomplete="off" spellcheck="false" />
@@ -129,6 +130,8 @@ const DB = {
   set skin(v){ localStorage.setItem("maria_skin", v); },
   get name(){ return localStorage.getItem("maria_name")||""; },
   set name(v){ localStorage.setItem("maria_name", (v||"").toString().toUpperCase().replace(/[^A-Z0-9 _-]/g,"").slice(0,10)); },
+  get pet(){ return localStorage.getItem("maria_pet")==="1"; },
+  set pet(v){ localStorage.setItem("maria_pet", v?"1":"0"); },
 };
 
 const SKINS = [
@@ -144,8 +147,27 @@ const SKINS = [
   {id:"diamond", name:"Diamond Rex", cost:2900, body:"#9ff0ea", dark:"#52b8b2", belly:"#e9fffd", acc:"diamond"},
   {id:"demon",   name:"Demon Rex",   cost:3800, body:"#b01030", dark:"#6a0a1c", belly:"#ff7a7a", acc:"devil"},
   {id:"rainbow", name:"Trippy Rex",  cost:5000, body:"#ff66cc", dark:"#9933ff", belly:"#ffffcc", acc:"trippy"},
+  {id:"chrome",  name:"Chrome Rex",  cost:6500, body:"#b9c2cc", dark:"#5a6470", belly:"#e9eef3", acc:"shades"},
+  {id:"prism",   name:"Prism Rex",   cost:8000, body:"#cfe9ff", dark:"#6aa0d0", belly:"#ffffff", acc:"diamond"},
+  {id:"aurora",  name:"Aurora Rex",  cost:9500, body:"#7af0c0", dark:"#2f9fb0", belly:"#dffff4", acc:"galaxy"},
 ];
 const skinById = (id)=> SKINS.find(s=>s.id===id) || SKINS[0];
+// ---- top-tier "chromatic" skins: metallic base + animated shimmer band (distinct from flat 'rainbow') ----
+const CHROMATIC = new Set(["diamond","galaxy","prism","aurora","chrome"]);  // ids that get the shimmer treatment
+const isChromatic = (sk)=> sk && CHROMATIC.has(sk.id);
+// a shimmering metallic fill for a band [x0,y0..x1,y1]; phase animates the light sweep
+function chromaFill(x0,y0,x1,y1,phase,sat=70,lite=58){
+  const g=ctx.createLinearGradient(x0,y0,x1,y1);
+  const s=(Math.sin(phase)*0.5+0.5);            // 0..1 sweep position of the bright band
+  for(let i=0;i<=6;i++){
+    const t=i/6;
+    const d=Math.abs(t-s);                       // distance from the moving light band
+    const l=clamp(lite + (1-Math.min(d*3.2,1))*34, 18, 94);   // bright crest, darker flanks
+    const hue=( (frameCount*1.6) + t*120 )%360;   // slow rainbow drift across the band
+    g.addColorStop(t, `hsl(${hue} ${sat}% ${l}%)`);
+  }
+  return g;
+}
 
 // ---------------- leaderboard ----------------
 // Works per-device out of the box. To make the list GLOBAL (shared by everyone
@@ -157,12 +179,39 @@ const BOARD = {
   basket:   "maria_trex_scores",
   max:      100,
 };
+// ---------------- 3-day competitive season ----------------
+// SEASON_ORIGIN is a fixed UTC anchor; currentSeason() increments every 3 days identically for
+// every client. The first client to touch the board after a rollover wipes scores + stamps the
+// new season number (see Board.unwrap / Board.submit).
+const SEASON_LEN_MS = 3*864e5;                       // 3 days
+const SEASON_ORIGIN = Date.UTC(2026, 5, 5, 0, 0, 0); // 2026-06-05T00:00:00Z (month 5 = June; fixed, never change)
+function currentSeason(){ return Math.floor((Date.now() - SEASON_ORIGIN) / SEASON_LEN_MS); }
+function seasonEndMs(){
+  const end=SEASON_ORIGIN + (currentSeason()+1)*SEASON_LEN_MS;
+  return Math.max(0, end - Date.now());              // ms remaining for the menu countdown
+}
+function fmtCountdown(ms){
+  if (ms<0) ms=0;
+  const totMin=Math.floor(ms/60000), d=Math.floor(totMin/1440), h=Math.floor((totMin%1440)/60), m=totMin%60;
+  return d+"d "+h+"h "+m+"m";
+}
 const Board = {
   cache: [], status: "local", lastName: "",
   global(){ return BOARD.provider==="pantry" && BOARD.pantryId.length>10; },
   url(){ return "https://getpantry.cloud/apiv1/pantry/"+BOARD.pantryId+"/basket/"+BOARD.basket; },
   localAll(){ try{ return JSON.parse(localStorage.getItem("maria_scores")||"[]"); }catch(e){ return []; } },
   localSet(a){ try{ localStorage.setItem("maria_scores", JSON.stringify(a)); }catch(e){} },
+  // local scores filtered to the CURRENT season (stale-season locals never re-pollute a fresh board)
+  localCurrent(){ const cur=currentSeason(); return this.localAll().filter(e=> (Number(e.season)||0) >= cur); },
+  // unwrap remote payload into {scores, season}; apply rollover (stale season → wipe).
+  unwrap(d){
+    let scores=[], season=0;
+    if (Array.isArray(d)) scores=d;                                   // legacy bare array → season 0
+    else if (d && typeof d==="object"){ scores=Array.isArray(d.scores)?d.scores:[]; season=Number(d.season)||0; }
+    const cur=currentSeason();
+    if (season < cur){ scores=[]; season=cur; }                       // ROLLOVER: first reader wipes
+    return { scores, season };
+  },
   // rank = 66% kush + 33% distance + a HIDDEN secret-collectible bonus (never shown)
   rankVal(e){ return 0.66*(e.score||0) + 0.33*(e.dist||0) + 5*(e.hidden||0); },
   // collapse to one best entry per name (by rank), sort by rank, trim
@@ -185,22 +234,27 @@ const Board = {
   },
   rankOf(name){ if(!name) return -1; return this.cache.findIndex(r=>r.name===name); },
   init(){
-    this.cache=this.normalize(this.localAll());
+    this.cache=this.normalize(this.localCurrent());
     if (this.global()){ this.status="loading"; this.refresh(); }
   },
   async refresh(){
     if (!this.global()) return;
     try{
       const res=await fetch(this.url(),{cache:"no-store"});
-      let remote=[]; if(res.ok){ const d=await res.json(); remote=Array.isArray(d)?d:(d&&Array.isArray(d.scores)?d.scores:[]); }
-      this.cache=this.normalize(remote.concat(this.localAll()));
+      let payload={scores:[],season:currentSeason()};
+      if(res.ok){ payload=this.unwrap(await res.json()); }
+      this.cache=this.normalize(payload.scores.concat(this.localCurrent()));
       this.status="online";
-    }catch(e){ this.status="offline"; this.cache=this.normalize(this.localAll()); }
+    }catch(e){ this.status="offline"; this.cache=this.normalize(this.localCurrent()); }
   },
   same(a,b){ if(a.length!==b.length) return false; for(let i=0;i<a.length;i++){ const x=a[i],y=b[i]; if(x.name!==y.name||x.score!==y.score||x.dist!==y.dist||(x.hidden||0)!==(y.hidden||0)) return false; } return true; },
-  async readRemote(){ try{ const r=await fetch(this.url(),{cache:"no-store"}); if(r.ok){ const d=await r.json(); return Array.isArray(d)?d:(d&&d.scores)||[]; } }catch(e){} return null; },
+  async readRemote(){ try{ const r=await fetch(this.url(),{cache:"no-store"}); if(r.ok){ const d=await r.json(); return this.unwrap(d); } }catch(e){} return null; },
   async submit(entry){
-    const local=this.localAll(); local.push(entry); this.localSet(local);   // instant + offline-proof
+    const cur=currentSeason();
+    entry.season=cur;                                                  // stamp the run's season
+    let local=this.localAll(); local.push(entry);
+    local=local.filter(e=> (Number(e.season)||0) >= cur);             // drop last-season locals
+    this.localSet(local);                                             // instant + offline-proof
     this.cache=this.normalize(local);
     this.lastName=entry.name;
     if (!this.global()) return;
@@ -210,14 +264,117 @@ const Board = {
       // the server already contains our merged set, so a concurrent write can never drop a high score.
       let merged=this.normalize(local), ok=false;
       for (let pass=0; pass<3; pass++){
-        const remote=await this.readRemote();
+        const rr=await this.readRemote();                             // {scores,season} (rolled) or null
+        const remote=rr ? rr.scores : null;
+        const writeSeason=Math.max(cur, rr ? (Number(rr.season)||0) : 0); // never roll the server's season backward
         const combined=this.normalize((remote||[]).concat(merged));
         if (remote!==null && this.same(this.normalize(remote), combined)){ merged=combined; ok=true; break; }   // already in sync
         merged=combined;
-        try{ const w=await fetch(this.url(),{ method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({scores:merged}) }); ok=ok||w.ok; }catch(e){}
+        try{ const w=await fetch(this.url(),{ method:"POST", headers:{"Content-Type":"application/json"},
+              body:JSON.stringify({scores:merged, season:writeSeason}) }); ok=ok||w.ok; }catch(e){}
       }
       this.cache=merged; this.status= ok?"online":"offline";
     }catch(e){ this.status="offline"; }
+  },
+};
+
+// ---------------- per-name account sync (Pantry profiles basket) ----------------
+// Every player NAME owns a cloud profile {bank,owned,skin,pet,best,bestDist}. Loading a name
+// adopts that profile into DB; saving reconciles via read-modify-write so two devices (or two
+// names) never clobber each other. Profile is the SINGLE SOURCE for bank/owned/skin/pet.
+const PROFILES = { pantryId: BOARD.pantryId, basket: "maria_trex_profiles" };
+const Profile = {
+  status: "local",          // "local" | "loading" | "synced" | "offline"
+  loadedName: "",           // name whose profile is currently adopted in DB
+  saving: false, dirty: false, syncedBank: 0,
+  key(name){ return (name||"").toString().toUpperCase().replace(/[^A-Z0-9 _-]/g,"").slice(0,10).trim(); },
+  global(){ return PROFILES.pantryId && PROFILES.pantryId.length>10; },
+  url(){ return "https://getpantry.cloud/apiv1/pantry/"+PROFILES.pantryId+"/basket/"+PROFILES.basket; },
+  statusLine(){
+    if (!this.global()) return "📱 device only";
+    if (this.status==="loading") return "☁️ loading account…";
+    if (this.status==="offline") return "☁️ offline · local account";
+    if (this.status==="synced")  return "☁️ account synced";
+    return "☁️ account ready";
+  },
+  // merge two profile records: owned=union, best/bestDist=max, bank/skin/pet=`over` wins (last-write).
+  mergeInto(base, over){
+    base=base||{}; over=over||{};
+    const ownA=Array.isArray(base.owned)?base.owned:[], ownB=Array.isArray(over.owned)?over.owned:[];
+    const owned=Array.from(new Set(["classic", ...ownA, ...ownB].filter(Boolean)));
+    return {
+      bank:    Math.max(0, Math.floor(Number(over.bank!=null?over.bank:base.bank)||0)),
+      owned,
+      skin:    (over.skin||base.skin||"classic"),
+      pet:     (over.pet!=null ? !!over.pet : !!base.pet),
+      best:    Math.max(Math.floor(Number(base.best)||0),     Math.floor(Number(over.best)||0)),
+      bestDist:Math.max(Math.floor(Number(base.bestDist)||0), Math.floor(Number(over.bestDist)||0)),
+    };
+  },
+  fromDB(){ return { bank:DB.bank, owned:DB.owned, skin:DB.skin, pet:DB.pet, best:DB.best, bestDist:DB.bestDist }; },
+  applyToDB(p){
+    if (!p) return;
+    if (Array.isArray(p.owned)) DB.owned = Array.from(new Set(["classic", ...p.owned].filter(Boolean)));
+    const _localSkin = DB.skin;
+    if (p.skin)        DB.skin = p.skin;
+    if (_localSkin && DB.owned.indexOf(_localSkin)>=0) DB.skin = _localSkin;  // keep player's equipped choice if still owned
+    if (p.pet!=null)   DB.pet  = !!p.pet;
+    if (p.bank!=null){ DB.bank = Math.max(0, Math.floor(Number(p.bank)||0)); Profile.syncedBank = DB.bank; }  // cloud value last reconciled (delta anchor)
+    if (p.best!=null     && Number(p.best)>DB.best)         DB.best     = Math.floor(Number(p.best));
+    if (p.bestDist!=null && Number(p.bestDist)>DB.bestDist) DB.bestDist = Math.floor(Number(p.bestDist));
+    if (DB.owned.indexOf(DB.skin)<0) DB.skin = DB.owned[DB.owned.length-1] || "classic"; // keep equipped valid
+  },
+  async readBasket(){
+    try{ const r=await fetch(this.url(),{cache:"no-store"}); if(r.ok){ const d=await r.json(); return (d&&typeof d==="object")?d:{}; } }catch(e){}
+    return null;   // null = couldn't read (offline / 400 on first-ever basket)
+  },
+  // ADOPT the remote profile for `name` into DB (local as base, remote as override → no progress lost).
+  async load(name){
+    const k=this.key(name); if(!k) return;
+    this.loadedName=k;
+    if (!this.global()){ this.status="local"; return; }
+    this.status="loading";
+    const basket=await this.readBasket();
+    if (basket===null){ this.status="offline"; return; }   // keep local DB as-is
+    const profiles=(basket.profiles && typeof basket.profiles==="object")?basket.profiles:{};
+    const remote=profiles[k]||null;
+    this.applyToDB(this.mergeInto(this.fromDB(), remote||{}));
+    this.status="synced";
+  },
+  // SAVE current DB into profiles[name]; preserves every OTHER name (read fresh each pass).
+  async save(){
+    if (!this.global()){ this.status="local"; return; }
+    const k=this.key(DB.name); if(!k) return;
+    if (k!==this.loadedName){ return; }                     // name changed but its profile not yet adopted → refuse stale save
+    if (this.saving){ this.dirty=true; return; }            // a save is in-flight → coalesce
+    this.saving=true; this.status="loading";
+    try{
+      for (let pass=0; pass<3; pass++){
+        const mineNow=this.fromDB();                        // re-snapshot each pass (latest local truth)
+        const basket=await this.readBasket();
+        const profiles=(basket && basket.profiles && typeof basket.profiles==="object")?basket.profiles:{};
+        const cloudBank=Math.max(0, Math.floor(Number((profiles[k]||{}).bank)||0));
+        const delta=Math.floor(DB.bank) - Math.floor(this.syncedBank||0);   // this session's net earn/spend
+        const merged=this.mergeInto(profiles[k]||{}, mineNow);
+        merged.bank=Math.max(0, cloudBank + delta);             // apply delta to FRESH cloud, never clobber another device's earnings
+        profiles[k]=merged;
+        DB.bank=merged.bank; this.syncedBank=merged.bank;       // re-anchor to what we just persisted
+        const body=Object.assign({}, basket||{}, {profiles});   // preserve any sibling top-level keys
+        let ok=false;
+        try{ const w=await fetch(this.url(),{ method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body) }); ok=w.ok; }catch(e){}
+        if (ok){
+          const after=await this.readBasket();              // verify our slot landed; if raced, retry fresh
+          const got=after && after.profiles && after.profiles[k];
+          const wantOwned=profiles[k].owned||[], gotOwned=new Set((got&&got.owned)||[]);
+          const ownedOK=wantOwned.every(id=>gotOwned.has(id));
+          if (got && Number(got.bank)>=Number(profiles[k].bank) && ownedOK){ this.status="synced"; break; }
+          continue;
+        } else { this.status="offline"; break; }
+      }
+    } finally {
+      this.saving=false;
+      if (this.dirty){ this.dirty=false; this.save(); }     // a save requested mid-flight → run once more
+    }
   },
 };
 
@@ -295,7 +452,7 @@ addEventListener("touchend", ()=>{ window.scrollTo(0,1); }, {passive:true});  //
 // Each control has a generous invisible zone around its (same-size) button. The left/right pad is
 // one wide zone split at the middle, so sliding your thumb left↔right switches direction. Anywhere
 // that isn't a control zone (and isn't the ≡ MENU button) is a JUMP — a huge forgiving target.
-const PAD_UP=96, PAD_DN=46, PAD_X=26;             // how far the invisible area extends past the buttons
+const PAD_UP=80, PAD_DN=40, PAD_X=8;              // ≤ flex gap (10px) so the fire zone can't leak into the jump button
 function zoneRect(el, padX, padUp, padDn){ const r=el.getBoundingClientRect(); return {l:r.left-padX, r:r.right+padX, t:r.top-padUp, b:r.bottom+padDn, w:r.width}; }
 function ctlZone(cx, cy){
   const L=btnEls.left, R=btnEls.right, F=btnEls.fire;
@@ -365,6 +522,7 @@ function nameBoxRect(){
 }
 nameInput.value = DB.name;
 nameInput.addEventListener("input", ()=>{ DB.name = nameInput.value; });
+nameInput.addEventListener("blur", ()=>{ if(DB.name && DB.name.trim() && Profile.key(DB.name)!==Profile.loadedName) Profile.load(DB.name); });
 nameInput.addEventListener("keydown", (e)=>{
   e.stopPropagation();                              // don't let game keybinds fire while typing
   if (e.key==="Enter"){ e.preventDefault(); nameInput.blur(); if(G.scene==="title") startGame(); }
@@ -480,6 +638,7 @@ let genX, score, lives, distance, frameCount, flash, hitTimer, dead, deadTimer, 
 let speedTimer, starTimer, flyTimer, ammo, fireCd, level, levelFlash, hidden;
 let chaseX, chaseSpeed, bribeUsed, hanging, hangTimer, hangX, slowmo, bossAlive, bossSpawnDist;
 let castleT, towerLevel;           // castle-entry cinematic timer; last level a KL-Towers obstacle spawned
+let petX, petY, petFlap, petPuffCd;   // 🦅 eagle companion: smoothed follow pos + wing-flap phase + smoke cooldown
 let demoMode=false;
 
 function curSkin(){ return skinById(DB.skin); }
@@ -496,6 +655,7 @@ function resetWorld(forDemo){
   speedTimer=0; starTimer=0; flyTimer=0; ammo=0; fireCd=0; level=0; levelFlash=0;
   chaseX=-540; chaseSpeed=3.05; bribeUsed=false; hanging=false; hangTimer=0; hangX=0; slowmo=0;
   bossAlive=false; bossSpawnDist=320; castleT=0; towerLevel=-1;
+  petX=player.x-70; petY=player.y-70; petFlap=0; petPuffCd=0;   // 🦅 eagle starts just behind/above
   platforms.push({x:-300,y:GROUND_TOP,w:1100,h:VH-GROUND_TOP+260,ground:true});
   genX=760;
   while (genX < cam.x+VW+1500) generateSegment();
@@ -830,6 +990,7 @@ function update(){
   updateBossShots(invincible);
   updatePickups();
   updateChase();
+  if (DB.pet) updatePet();          // 🦅 move eagle + emit joint smoke BEFORE particles age this frame
   updateParticles();
 }
 
@@ -1045,12 +1206,63 @@ function die(reason){
 }
 function lavaSplash(x){ for(let i=0;i<16;i++) particles.push({x,y:GROUND_TOP+6,vx:rnd(-4,4),vy:rnd(-8,-2),life:irnd(20,40),max:40,r:rnd(3,7),col:`hsl(${irnd(10,40)} 100% 55%)`,kind:"spark"}); }
 
+// 🦅 Kush Eagle companion — flapping bald eagle smoking a joint, drawn in WORLD space
+function drawEagle(x,y,flap){
+  const dir = (player.facing>0?1:-1);          // face the way we travel
+  ctx.save(); ctx.translate(x,y); ctx.scale(dir,1);   // mirror for left-facing
+  ctx.fillStyle="rgba(0,0,0,.14)"; ctx.beginPath(); ctx.ellipse(0,26,16,4,0,0,6.28); ctx.fill();
+  // wings (behind body) — flapping
+  ctx.fillStyle="#6b4a2a"; ctx.strokeStyle="#3f2c18"; ctx.lineWidth=1;
+  for(const s of [-1,1]){ ctx.save(); ctx.translate(0,-2); ctx.rotate(s*flap*0.5);
+    ctx.beginPath(); ctx.moveTo(0,0);
+    ctx.quadraticCurveTo(s*-22,-16,s*-34,-2); ctx.quadraticCurveTo(s*-24,2,s*-30,10);
+    ctx.quadraticCurveTo(s*-16,4,s*-10,12); ctx.quadraticCurveTo(s*-6,4,0,6);
+    ctx.closePath(); ctx.fill(); ctx.stroke(); ctx.restore(); }
+  // tail
+  ctx.fillStyle="#fff"; ctx.beginPath(); ctx.moveTo(-6,6); ctx.lineTo(-20,12); ctx.lineTo(-18,16); ctx.lineTo(-4,12); ctx.closePath(); ctx.fill();
+  // body
+  ctx.fillStyle="#7a5430"; ctx.beginPath(); ctx.ellipse(0,2,12,9,0,0,6.28); ctx.fill();
+  ctx.fillStyle="#5e4022"; ctx.beginPath(); ctx.ellipse(-2,5,9,5,0,0,6.28); ctx.fill();
+  // white head + eye
+  ctx.fillStyle="#f4f4ee"; ctx.beginPath(); ctx.arc(9,-5,8,0,6.28); ctx.fill();
+  ctx.fillStyle="#111"; ctx.beginPath(); ctx.arc(12,-6,1.8,0,6.28); ctx.fill();
+  // hooked yellow beak
+  ctx.fillStyle="#ffb31a"; ctx.beginPath(); ctx.moveTo(15,-6); ctx.lineTo(24,-3); ctx.quadraticCurveTo(26,-1,23,1); ctx.lineTo(15,-1); ctx.closePath(); ctx.fill();
+  // the JOINT near the beak (white stick + glowing ember) — matches the smoke from updatePet
+  ctx.save(); ctx.translate(24,-1); ctx.rotate(0.15);
+  ctx.fillStyle="#f7f3e8"; ctx.fillRect(0,-1.4,9,2.8);
+  ctx.fillStyle=(frameCount%20<10)?"#ff7a2a":"#ffae33"; ctx.beginPath(); ctx.arc(9.5,0,1.8,0,6.28); ctx.fill();
+  ctx.fillStyle="rgba(255,140,40,.35)"; ctx.beginPath(); ctx.arc(9.5,0,3.2,0,6.28); ctx.fill();
+  ctx.restore();
+  ctx.restore();
+}
+function updatePet(){
+  // eagle trails the player (eased follow to above-and-behind) + bob, smokes a joint (puff on cooldown)
+  const dir = (player.facing>0?1:-1);
+  const tx = player.x + player.w/2 - dir*64;                 // behind = opposite of facing
+  const ty = player.y - 64 + Math.sin(frameCount*0.05)*6;    // gentle hover bob baked into target
+  petX += (tx-petX)*0.10;                                    // smooth, laggy follow
+  petY += (ty-petY)*0.10;
+  petFlap = Math.sin(frameCount*0.30);                       // wing-flap phase for drawEagle
+  if (--petPuffCd <= 0){
+    petPuffCd = irnd(12,18);
+    const bx = petX + dir*16, by = petY - 4;                 // joint tip near the beak (faces travel dir)
+    for(let i=0;i<2;i++) particles.push({
+      x:bx+rnd(-1,1), y:by+rnd(-1,1),
+      vx:rnd(-.3,.3)+dir*0.2, vy:rnd(-.9,-.3),
+      life:irnd(22,34), max:34, r:rnd(2,4),
+      col:"rgba(225,235,225,.7)", kind:"smoke"
+    });
+  }
+}
+
 function bankAndSubmit(){
   DB.bank = DB.bank + score;             // bank this run's kush for the shop
   if (score>DB.best) DB.best=score;
   if (distance>DB.bestDist) DB.bestDist=distance;
-  const nm = (DB.name||"PLAYER").toUpperCase().slice(0,10) || "PLAYER";
+  const nm = Profile.key(DB.name) || "PLAYER";
   Board.submit({ name:nm, score:Math.floor(score), dist:Math.floor(distance), hidden:Math.floor(hidden), ts:Date.now() });
+  Profile.save();                        // push bank/best/bestDist (+owned/skin/pet) to the cloud account
 }
 function gameOver(){ G.scene="over"; bankAndSubmit(); }
 // in-game "back to menu": bank + submit the run (nothing lost), then to the title
@@ -1102,6 +1314,7 @@ function render(){
   drawBossShots();
   drawParticles();
   if (!hanging) drawPlayer();
+  if (DB.pet && !hanging && (G.scene==="play"||G.scene==="paused")) drawEagle(petX, petY, petFlap);   // 🦅 only when world is live
   drawChaseCar(th);
   if (hanging) drawHanging();
   ctx.restore();
@@ -1516,6 +1729,11 @@ function drawPlayer(){
   const sk=curSkin();
   let body=sk.body, dark=sk.dark, belly=sk.belly;
   if (inv){ const h=(frameCount*14)%360; body=`hsl(${h} 75% 50%)`; dark=`hsl(${h} 75% 38%)`; belly=`hsl(${(h+40)%360} 80% 75%)`; }
+  else if (isChromatic(sk)){
+    // metallic base tints so the silhouette still reads where the gradient doesn't cover
+    const h=(frameCount*1.6)%360;
+    body=`hsl(${h} 60% 60%)`; dark=`hsl(${h} 55% 38%)`; belly=`hsl(${(h+40)%360} 50% 86%)`;
+  }
   else if (sk.id==="rainbow"){ const h=(frameCount*5)%360; body=`hsl(${h} 85% 60%)`; dark=`hsl(${h} 85% 45%)`; belly=`hsl(${(h+50)%360} 90% 80%)`; }
 
   ctx.fillStyle="rgba(0,0,0,.2)"; ctx.beginPath(); ctx.ellipse(p.x+p.w/2,p.y+p.h+2,p.w*.45,6,0,0,6.28); ctx.fill();
@@ -1554,13 +1772,15 @@ function drawPlayer(){
   ctx.fillStyle=body; ctx.fillRect(w*0.55-4,h-16,9,16+legB);
   ctx.fillStyle=dark; ctx.fillRect(w*0.30-6,h-2+legA,14,5); ctx.fillRect(w*0.53-6,h-2+legB,14,5);
   // body
-  ctx.fillStyle=body; roundRect(2,14+breath,w-6,h-26,10); ctx.fill();
+  if (isChromatic(sk)){ ctx.fillStyle=chromaFill(2,14+breath, w-4,h-12+breath, frameCount*0.05); } else ctx.fillStyle=body;
+  roundRect(2,14+breath,w-6,h-26,10); ctx.fill();
   ctx.fillStyle=belly; roundRect(8,22+breath,w-20,h-34,8); ctx.fill();
   ctx.fillStyle=dark; for(let yy=26;yy<h-16;yy+=8) ctx.fillRect(11,yy+breath,w-26,1.5);
   // tiny arm
   ctx.fillStyle=dark; ctx.fillRect(w-16,26,9,5); ctx.fillRect(w-9,28,4,6);
   // head
-  ctx.fillStyle=body; roundRect(w-26,0+breath,30,24,9); ctx.fill();
+  ctx.fillStyle = isChromatic(sk) ? chromaFill(w-26,0+breath, w+4,24+breath, frameCount*0.05+1.0) : body;
+  roundRect(w-26,0+breath,30,24,9); ctx.fill();
   ctx.fillRect(w-4,8+breath,12,12);
   ctx.fillStyle=dark; ctx.fillRect(w+4,12+breath,4,2);
   ctx.fillStyle="#fff"; for(let i=0;i<4;i++) ctx.fillRect(w-2+i*3,19+breath,2,3);
@@ -1570,6 +1790,14 @@ function drawPlayer(){
   ctx.fillStyle=dark; for(let i=0;i<3;i++){ const sx=10+i*9; ctx.beginPath(); ctx.moveTo(sx,14+breath); ctx.lineTo(sx+5,6+breath); ctx.lineTo(sx+10,14+breath); ctx.fill(); }
   // accessory (skin)
   drawAccessory(sk.acc, w, breath);
+  if (isChromatic(sk)){                       // moving highlight streak + sparkle twinkle
+    ctx.save(); ctx.globalAlpha=0.55; ctx.globalCompositeOperation="lighter";
+    const gx=2 + ((Math.sin(frameCount*0.05)*0.5+0.5))*(w-10);
+    ctx.fillStyle="rgba(255,255,255,0.9)";
+    ctx.fillRect(gx, 16+breath, 3, h-30);
+    if (frameCount%18<9){ ctx.fillRect(w-12,20+breath,2,2); ctx.fillRect(w-20,30+breath,2,2); }
+    ctx.restore();
+  }
   ctx.restore();
 
   if (boosted){ ctx.strokeStyle=`rgba(124,252,106,${0.4+0.3*Math.sin(frameCount*0.4)})`; ctx.lineWidth=3; ctx.beginPath(); ctx.ellipse(p.x+p.w/2,p.y+p.h/2,p.w*0.8,p.h*0.7,0,0,6.28); ctx.stroke(); }
@@ -2070,8 +2298,9 @@ function drawTitle(){
     button(Lx, 320, colW, 50, "▶  PLAY", ()=>startGame());
     button(Lx, 380, colW, 40, "🛍  KUSH SHOP", ()=>openShop(), "rgba(255,213,74,.18)");
     ctx.textAlign="center"; ctx.fillStyle="#8298ba"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText("← → run · SPACE jump · F shoot", Lcx, 440);
-    ctx.fillStyle="#ffd54a"; ctx.font="bold 18px 'Trebuchet MS'"; ctx.fillText("🏆 HIGH SCORES", Rcx, 196);
-    ctx.fillStyle="#8fa6c8"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText(Board.statusLine(), Rcx, 214);
+    ctx.fillStyle="#ffd54a"; ctx.font="bold 18px 'Trebuchet MS'"; ctx.fillText("🏆 HIGH SCORES", Rcx, 192);
+    ctx.fillStyle="#8fa6c8"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText(Board.statusLine(), Rcx, 208);
+    ctx.fillStyle="#7CFC6A"; ctx.font="bold 11px 'Trebuchet MS'"; ctx.fillText("⏳ season resets in "+fmtCountdown(seasonEndMs()), Rcx, 222);
     drawBoardRows(Rx+8, 240, colW-16, 9, null);
   } else {
     const ix=x0+pad, iw=w-2*pad;
@@ -2079,8 +2308,9 @@ function drawTitle(){
     ctx.textAlign="left";
     button(ix, 228, iw, 44, "▶  PLAY", ()=>startGame());
     button(ix, 278, iw, 38, "🛍  KUSH SHOP", ()=>openShop(), "rgba(255,213,74,.18)");
-    ctx.textAlign="center"; ctx.fillStyle="#ffd54a"; ctx.font="bold 15px 'Trebuchet MS'"; ctx.fillText("🏆 HIGH SCORES", cx, 344);
-    ctx.fillStyle="#8fa6c8"; ctx.font="10px 'Trebuchet MS'"; ctx.fillText(Board.statusLine(), cx, 360);
+    ctx.textAlign="center"; ctx.fillStyle="#ffd54a"; ctx.font="bold 15px 'Trebuchet MS'"; ctx.fillText("🏆 HIGH SCORES", cx, 340);
+    ctx.fillStyle="#8fa6c8"; ctx.font="10px 'Trebuchet MS'"; ctx.fillText(Board.statusLine(), cx, 356);
+    ctx.fillStyle="#7CFC6A"; ctx.font="bold 10px 'Trebuchet MS'"; ctx.fillText("⏳ season resets in "+fmtCountdown(seasonEndMs()), cx, 370);
     drawBoardRows(ix+4, 378, iw-8, 5, null);
   }
   ctx.fillStyle="#fff"; ctx.globalAlpha=0.6+0.4*Math.sin(frameCount*0.12); ctx.font="bold 14px 'Trebuchet MS'"; ctx.textAlign="center";
@@ -2092,18 +2322,33 @@ function drawShop(){
   ctx.fillStyle="rgba(6,10,20,.82)"; ctx.fillRect(0,0,VW,VH);
   const w=Math.min(VW-16, 900), x0=VW/2-w/2, cx=VW/2;
   panel(x0,16,w,VH-32,"rgba(255,213,74,.5)");
-  ctx.textAlign="center"; ctx.fillStyle="#ffd54a"; ctx.font="bold 26px 'Trebuchet MS'"; ctx.fillText("🛍  KUSH SHOP",cx,48);
+  ctx.textAlign="center"; ctx.fillStyle="#ffd54a"; ctx.font="bold 24px 'Trebuchet MS'"; ctx.fillText("🛍  KUSH SHOP",cx,42);
   ctx.textAlign="left";
   const owned=DB.owned, sel=DB.skin;
   const gap=14, inner=w-32;
   const cols=Math.max(2, Math.min(4, Math.floor((inner+gap)/(170+gap))));
   const cw=Math.floor((inner-(cols-1)*gap)/cols), ch=112;
-  const startX=x0+16, startY=88, bottomY=VH-48;
+  const startX=x0+16, startY=104, bottomY=VH-48;
   const rowsFit=Math.max(1, Math.floor((bottomY-startY+gap)/(ch+gap)));
   const perPage=cols*rowsFit, pages=Math.ceil(SKINS.length/perPage);
   shopPage=clamp(shopPage,0,pages-1);
   ctx.textAlign="center"; ctx.fillStyle="#fff"; ctx.font="13px 'Trebuchet MS'";
-  ctx.fillText("Bank: "+DB.bank+" 🌿"+(pages>1?("   ·   page "+(shopPage+1)+"/"+pages):""),cx,70); ctx.textAlign="left";
+  ctx.fillText("Bank: "+DB.bank+" 🌿"+(pages>1?("   ·   page "+(shopPage+1)+"/"+pages):""),cx,62); ctx.textAlign="left";
+  // ----- 🦅 Kush Eagle PET (synthetic shop item, shown on every page, above the skin grid) -----
+  {
+    const pet={ id:"pet_eagle", name:"Kush Eagle", cost:100000 };
+    const ph=24, py=72, px=x0+16, pw=inner, ownedPet=DB.pet;
+    ctx.fillStyle= ownedPet?"rgba(124,252,106,.18)":"rgba(255,213,74,.10)"; roundRect(px,py,pw,ph,8); ctx.fill();
+    ctx.strokeStyle= ownedPet?"#7CFC6A":"rgba(255,213,74,.5)"; ctx.lineWidth=1.5; roundRect(px,py,pw,ph,8); ctx.stroke();
+    ctx.textAlign="left"; ctx.fillStyle="#fff"; ctx.font="bold 13px 'Trebuchet MS'";
+    ctx.fillText(pw>320? "🦅 Kush Eagle — flies beside you, smoking a joint" : "🦅 Kush Eagle pet", px+10, py+16);
+    let plabel,pc;
+    if (ownedPet){ plabel="✔ EQUIPPED"; pc="#7CFC6A"; }
+    else { plabel=(DB.bank>=pet.cost?"BUY · ":"NEED ")+pet.cost+" 🌿"; pc=DB.bank>=pet.cost?"#ffd54a":"#ff8a8a"; }
+    ctx.textAlign="right"; ctx.fillStyle=pc; ctx.font="bold 13px 'Trebuchet MS'";
+    ctx.fillText(plabel,px+pw-10,py+16); ctx.textAlign="left";
+    uiButtons.push({x:px,y:py,w:pw,h:ph,action:()=>buyPet(pet)});
+  }
   const startIdx=shopPage*perPage;
   for (let idx=0; idx<perPage; idx++){
     const i=startIdx+idx; if(i>=SKINS.length) break;
@@ -2131,19 +2376,28 @@ function drawShop(){
 }
 function drawSkinPreview(s,cx,cy){
   ctx.save(); ctx.translate(cx-18,cy-26); const w=40,h=44;
-  ctx.fillStyle=s.body; roundRect(8,12,w-10,h-18,8); ctx.fill();
-  ctx.fillStyle=s.belly; roundRect(12,18,w-22,h-26,6); ctx.fill();
-  ctx.fillStyle=s.body; roundRect(w-20,2,24,18,7); ctx.fill();
+  let body=s.body, dark=s.dark, belly=s.belly;
+  if (isChromatic(s)){ const h2=(frameCount*1.6)%360; body=`hsl(${h2} 60% 60%)`; dark=`hsl(${h2} 55% 38%)`; belly=`hsl(${(h2+40)%360} 50% 86%)`; }
+  ctx.fillStyle = isChromatic(s) ? chromaFill(8,12, w-2,h-6, frameCount*0.05) : body;
+  roundRect(8,12,w-10,h-18,8); ctx.fill();
+  ctx.fillStyle=belly; roundRect(12,18,w-22,h-26,6); ctx.fill();
+  ctx.fillStyle = isChromatic(s) ? chromaFill(w-20,2, w+4,20, frameCount*0.05+1.0) : body;
+  roundRect(w-20,2,24,18,7); ctx.fill();
   ctx.fillStyle="#fff"; ctx.beginPath(); ctx.arc(w-4,9,4,0,6.28); ctx.fill();
   ctx.fillStyle="#111"; ctx.beginPath(); ctx.arc(w-2,9,2,0,6.28); ctx.fill();
-  ctx.fillStyle=s.dark; ctx.fillRect(12,h-6,7,8); ctx.fillRect(24,h-6,7,8);
+  ctx.fillStyle=dark; ctx.fillRect(12,h-6,7,8); ctx.fillRect(24,h-6,7,8);
   drawAccessory(s.acc, w+ (s.acc==="rasta"?0:0), 0);
   ctx.restore();
 }
 function buyOrEquip(s){
   const owned=DB.owned;
-  if (owned.includes(s.id)){ DB.skin=s.id; sfx.collect(); return; }
-  if (DB.bank>=s.cost){ DB.bank=DB.bank-s.cost; owned.push(s.id); DB.owned=owned; DB.skin=s.id; sfx.star(); }
+  if (owned.includes(s.id)){ DB.skin=s.id; sfx.collect(); Profile.save(); return; }
+  if (DB.bank>=s.cost){ DB.bank=DB.bank-s.cost; owned.push(s.id); DB.owned=owned; DB.skin=s.id; sfx.star(); Profile.save(); }
+  else { sfx.hurt(); flash=6; }
+}
+function buyPet(pet){
+  if (DB.pet){ sfx.collect(); return; }                 // already owned → always equipped
+  if (DB.bank>=pet.cost){ DB.bank=DB.bank-pet.cost; DB.pet=true; sfx.star(); Profile.save(); }
   else { sfx.hurt(); flash=6; }
 }
 
@@ -2217,6 +2471,7 @@ function loop(now){
   requestAnimationFrame(loop);
 }
 Board.init();
+if (DB.name && DB.name.trim()) Profile.load(DB.name);   // adopt cloud account for the saved name
 resetWorld(true);
 requestAnimationFrame(loop);
 </script>
