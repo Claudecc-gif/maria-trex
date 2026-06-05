@@ -10,7 +10,7 @@
 <link rel="manifest" href="manifest.json" />
 <meta name="mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black" />
 <meta name="apple-mobile-web-app-title" content="Kush Rush" />
 <link rel="apple-touch-icon" href="apple-touch-icon.png" />
 <link rel="icon" type="image/svg+xml" href="icon.svg" />
@@ -26,14 +26,14 @@
     image-rendering:pixelated;
     width:100vw; height:100vh; display:block;   /* fill the screen in any orientation */
   }
-  .touch { position:fixed; bottom:14px; display:none; user-select:none; -webkit-user-select:none; z-index:5; }
+  .touch { position:fixed; bottom:calc(14px + env(safe-area-inset-bottom,0px)); display:none; user-select:none; -webkit-user-select:none; z-index:5; pointer-events:none; }
   .pad { display:flex; gap:10px; }
   .btn {
     width:62px; height:62px; border-radius:14px; font-size:24px; font-weight:bold;
     background:rgba(255,255,255,.14); border:2px solid rgba(255,255,255,.35); color:#fff;
     display:flex; align-items:center; justify-content:center; backdrop-filter:blur(2px);
   }
-  .btn:active { background:rgba(255,255,255,.34); }
+  .btn:active, .btn.on { background:rgba(255,255,255,.40); border-color:rgba(255,255,255,.7); }
   #leftCtl { left:14px; }
   #rightCtl { right:14px; }
   #jumpBtn { width:80px; height:80px; font-size:28px; }
@@ -99,6 +99,8 @@ function fitCanvas(){
 fitCanvas();
 addEventListener("resize", fitCanvas);
 addEventListener("orientationchange", fitCanvas);
+// zoom the world OUT on narrow/portrait screens so you can see more of the surroundings (1 = no zoom)
+function viewZoom(){ return clamp(VW/560, 0.56, 1); }
 
 // ---------------- constants ----------------
 const GROUND_TOP = VH - 84;
@@ -253,15 +255,8 @@ addEventListener("keydown", e=>{
 });
 addEventListener("keyup", e=>setKey(e.key.toLowerCase(),false));
 
-document.querySelectorAll(".btn").forEach(b=>{
-  const key=b.dataset.key;
-  const press=(v)=>(ev)=>{ ev.preventDefault(); keys[key]=v; if(v&&G.scene!=="play"&&key==="jump") onConfirm(); };
-  b.addEventListener("touchstart",press(true),{passive:false});
-  b.addEventListener("touchend",press(false),{passive:false});
-  b.addEventListener("mousedown",press(true));
-  b.addEventListener("mouseup",press(false));
-  b.addEventListener("mouseleave",press(false));
-});
+const btnEls={};
+document.querySelectorAll(".btn").forEach(b=>{ btnEls[b.dataset.key]=b; });
 
 // canvas pointer (menus + start)
 function ptr(e){
@@ -296,29 +291,61 @@ function goFullscreen(){
 addEventListener("pointerdown", goFullscreen, {passive:true});
 addEventListener("touchend", ()=>{ window.scrollTo(0,1); }, {passive:true});  // nudge iOS Safari bar away
 
-// ===== TAP ANYWHERE = JUMP (during play) — big forgiving target; the jump button stays visible =====
-let jumpTouchId=null;
-function isControlTarget(t){ return !!(t && t.closest && t.closest(".btn")); }   // left/right/fire/jump pads
-function onScreenButton(e){ const p=ptr(e); for(const b of uiButtons){ if(p.x>=b.x&&p.x<=b.x+b.w&&p.y>=b.y&&p.y<=b.y+b.h) return true; } return false; }
-function jumpPress(e){
-  if (G.scene!=="play") return;                 // menus are handled by the canvas handler
-  if (isControlTarget(e.target)) return;        // steering/fire/jump pads do their own thing
-  if (onScreenButton(e)) return;                // the on-canvas ≡ MENU button
+// ===== zone-based touch controls: big invisible hit areas (extended up/down), slide to steer =====
+// Each control has a generous invisible zone around its (same-size) button. The left/right pad is
+// one wide zone split at the middle, so sliding your thumb left↔right switches direction. Anywhere
+// that isn't a control zone (and isn't the ≡ MENU button) is a JUMP — a huge forgiving target.
+const PAD_UP=96, PAD_DN=46, PAD_X=26;             // how far the invisible area extends past the buttons
+function zoneRect(el, padX, padUp, padDn){ const r=el.getBoundingClientRect(); return {l:r.left-padX, r:r.right+padX, t:r.top-padUp, b:r.bottom+padDn, w:r.width}; }
+function ctlZone(cx, cy){
+  const L=btnEls.left, R=btnEls.right, F=btnEls.fire;
+  if (L && R){
+    const lr=L.getBoundingClientRect(), rr=R.getBoundingClientRect();
+    const dl=Math.min(lr.left,rr.left)-PAD_X, dr=Math.max(lr.right,rr.right)+PAD_X;
+    const dt=Math.min(lr.top,rr.top)-PAD_UP, db=Math.max(lr.bottom,rr.bottom)+PAD_DN;
+    if (cx>=dl && cx<=dr && cy>=dt && cy<=db){ return cx < (Math.min(lr.left,rr.left)+Math.max(lr.right,rr.right))/2 ? "left" : "right"; }
+  }
+  if (F){ const z=zoneRect(F,PAD_X,PAD_UP,PAD_DN); if(cx>=z.l&&cx<=z.r&&cy>=z.t&&cy<=z.b) return "fire"; }
+  return "jump";
+}
+function onScreenButton(cx, cy){ const r=canvas.getBoundingClientRect(); const px=(cx-r.left)*(VW/r.width), py=(cy-r.top)*(VH/r.height);
+  for(const b of uiButtons){ if(px>=b.x&&px<=b.x+b.w&&py>=b.y&&py<=b.y+b.h) return true; } return false; }
+const touchCtl=new Map();   // touch identifier -> "left"|"right"|"fire"|"jump"
+function refreshKeys(){
+  let l=false,r=false,f=false,j=false;
+  for (const z of touchCtl.values()){ if(z==="left")l=true; else if(z==="right")r=true; else if(z==="fire")f=true; else if(z==="jump")j=true; }
+  keys.left=l; keys.right=r; keys.fire=f; keys.jump=j;
+  if(btnEls.left) btnEls.left.classList.toggle("on",l);
+  if(btnEls.right) btnEls.right.classList.toggle("on",r);
+  if(btnEls.fire) btnEls.fire.classList.toggle("on",f);
+  if(btnEls.jump) btnEls.jump.classList.toggle("on",j);
+}
+function tStart(e){
   Music.start();
-  keys.jump=true;
-  jumpTouchId = (e.changedTouches && e.changedTouches.length) ? e.changedTouches[0].identifier : "mouse";
+  if (G.scene!=="play") return;                                  // menus: canvas handler navigates
+  for (const t of e.changedTouches){
+    if (onScreenButton(t.clientX,t.clientY)) continue;           // leave the ≡ MENU tap to handleClick
+    touchCtl.set(t.identifier, ctlZone(t.clientX,t.clientY));
+  }
+  refreshKeys();
   if (e.cancelable) e.preventDefault();
 }
-function jumpRelease(e){
-  if (jumpTouchId===null) return;
-  if (e.changedTouches){ for(const t of e.changedTouches){ if(t.identifier===jumpTouchId){ keys.jump=false; jumpTouchId=null; return; } } }
-  else { keys.jump=false; jumpTouchId=null; }    // mouseup
+function tMove(e){
+  if (G.scene!=="play" || !touchCtl.size) return;
+  let changed=false;
+  for (const t of e.changedTouches){ if(touchCtl.has(t.identifier)){ const z=ctlZone(t.clientX,t.clientY); if(touchCtl.get(t.identifier)!==z){ touchCtl.set(t.identifier,z); changed=true; } } }
+  if (changed) refreshKeys();
+  if (e.cancelable) e.preventDefault();
 }
-addEventListener("touchstart", jumpPress, {passive:false});
-addEventListener("mousedown", jumpPress);
-addEventListener("touchend", jumpRelease, {passive:true});
-addEventListener("touchcancel", jumpRelease, {passive:true});
-addEventListener("mouseup", jumpRelease);
+function tEnd(e){ for (const t of e.changedTouches) touchCtl.delete(t.identifier); refreshKeys(); }
+addEventListener("touchstart", tStart, {passive:false});
+addEventListener("touchmove", tMove, {passive:false});
+addEventListener("touchend", tEnd, {passive:true});
+addEventListener("touchcancel", tEnd, {passive:true});
+// laptop: click anywhere (except the ≡ MENU button) to jump
+function mouseJump(e){ if(G.scene!=="play"||onScreenButton(e.clientX,e.clientY)) return; keys.jump=true; }
+addEventListener("mousedown", mouseJump);
+addEventListener("mouseup", ()=>{ keys.jump=false; });
 
 function onConfirm(){
   if (G.scene==="intro"){ G.scene="title"; Board.refresh(); return; }
@@ -482,7 +509,7 @@ function startGame(){
     return;
   }
   resetWorld(false);
-  keys.jump=false; jumpTouchId=null;   // no stale held-jump from a menu tap
+  touchCtl.clear(); keys.jump=keys.left=keys.right=keys.fire=false;   // no stale held inputs from menu taps
   G.scene="play"; G.paused=false;
   if (ac() && actx.state==="suspended") actx.resume();
   Music.setTheme(0); Music.start();
@@ -781,9 +808,10 @@ function update(){
 
   distance=Math.max(distance, Math.floor(player.x/10));
 
-  // camera (x + vertical follow so you can climb high)
-  cam.x=lerp(cam.x, Math.max(0,player.x-VW*0.34), 0.16);
-  const tcy=clamp(player.y-VH*0.56, SKY_TOP-40, 0);
+  // camera (x + vertical follow so you can climb high); zoomed out on portrait → see more around you
+  const Z=viewZoom(), viewW=VW/Z, viewH=VH/Z;
+  cam.x=lerp(cam.x, Math.max(0,player.x-viewW*0.34), 0.16);
+  const tcy=clamp(player.y-viewH*0.56, SKY_TOP-40, 0);
   cam.y=lerp(cam.y, tcy, 0.12);
 
   // run anim
@@ -1063,6 +1091,7 @@ function render(){
   drawBackground(th);
 
   ctx.save();
+  const _Z=viewZoom(); if(_Z!==1) ctx.scale(_Z,_Z);
   ctx.translate(-Math.round(cam.x), -Math.round(cam.y));
   drawGroundAndHazards(th);
   drawPlatforms(th);
