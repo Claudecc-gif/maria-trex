@@ -36,8 +36,19 @@
     display:flex; align-items:center; justify-content:center; backdrop-filter:blur(2px);
   }
   .btn:active, .btn.on { background:rgba(255,255,255,.40); border-color:rgba(255,255,255,.7); }
-  #leftCtl { left:14px; }
   #rightCtl { right:14px; }
+  /* floating on-screen joystick (mobile) — spawns under your thumb on the left side */
+  #joystick {
+    position:fixed; width:120px; height:120px; border-radius:50%;
+    border:3px solid rgba(255,255,255,.30); background:rgba(255,255,255,.08);
+    transform:translate(-50%,-50%); z-index:5; pointer-events:none; display:none;
+    backdrop-filter:blur(2px); touch-action:none;
+  }
+  #joyKnob {
+    position:absolute; left:50%; top:50%; width:52px; height:52px; margin:-26px 0 0 -26px;
+    border-radius:50%; background:rgba(255,255,255,.34); border:2px solid rgba(255,255,255,.7);
+    box-shadow:0 0 12px rgba(124,252,106,.25);
+  }
   #fireBtn { width:88px; height:88px; font-size:34px; }
   #jumpBtn { width:112px; height:112px; font-size:40px; }
   #nameInput {
@@ -62,10 +73,7 @@
 </head>
 <body>
   <div id="wrap"><canvas id="game" width="960" height="540"></canvas></div>
-  <div id="leftCtl" class="touch"><div class="pad">
-    <div class="btn" data-key="left">◀</div>
-    <div class="btn" data-key="right">▶</div>
-  </div></div>
+  <div id="joystick"><div id="joyKnob"></div></div>
   <div id="rightCtl" class="touch"><div class="pad">
     <div class="btn" id="fireBtn" data-key="fire">🚬</div>
     <div class="btn" id="jumpBtn" data-key="jump">⤒</div>
@@ -457,32 +465,39 @@ function goFullscreen(){
 addEventListener("pointerdown", goFullscreen, {passive:true});
 addEventListener("touchend", ()=>{ window.scrollTo(0,1); }, {passive:true});  // nudge iOS Safari bar away
 
-// ===== zone-based touch controls: big invisible hit areas (extended up/down), slide to steer =====
-// Each control has a generous invisible zone around its (same-size) button. The left/right pad is
-// one wide zone split at the middle, so sliding your thumb left↔right switches direction. Anywhere
-// that isn't a control zone (and isn't the ≡ MENU button) is a JUMP — a huge forgiving target.
-const PAD_UP=80, PAD_DN=40, PAD_X=8;              // ≤ flex gap (10px) so the fire zone can't leak into the jump button
+// ===== touch controls: floating JOYSTICK (left side) to steer, JUMP/SHOOT on the right =====
+// Mobile only. Touch down anywhere on the LEFT side of the screen and a joystick spawns under
+// your thumb; its base stays put (stuck) while you slide left↔right to steer. The whole RIGHT
+// side is JUMP (tap anywhere), with the dedicated 🚬 SHOOT button keeping its own zone. A tap on
+// the ≡ MENU button is left to the canvas handler. PC (keyboard + mouse) controls are unchanged.
+const joyEl=document.getElementById("joystick"), knobEl=document.getElementById("joyKnob");
+const JOY_RADIUS=46;       // px the knob centre can travel from the base centre
+const JOY_DEAD=16;         // px of horizontal slack before a direction registers (no jitter at rest)
+const STICK_FRAC=0.46;     // a touch starting in the left this fraction of the screen = the joystick
+function inStickZone(cx){ return cx < window.innerWidth*STICK_FRAC; }
+function moveKnob(dx,dy){ knobEl.style.transform="translate("+dx+"px,"+dy+"px)"; }
+function showJoy(x,y){ joyEl.style.left=x+"px"; joyEl.style.top=y+"px"; joyEl.style.display="block"; moveKnob(0,0); }
+function hideJoy(){ joyEl.style.display="none"; moveKnob(0,0); }
+
+const PAD_UP=80, PAD_DN=40, PAD_X=8;              // generous invisible halo around the 🚬 SHOOT button
 function zoneRect(el, padX, padUp, padDn){ const r=el.getBoundingClientRect(); return {l:r.left-padX, r:r.right+padX, t:r.top-padUp, b:r.bottom+padDn, w:r.width}; }
-function ctlZone(cx, cy){
-  const L=btnEls.left, R=btnEls.right, F=btnEls.fire;
-  if (L && R){
-    const lr=L.getBoundingClientRect(), rr=R.getBoundingClientRect();
-    const dl=Math.min(lr.left,rr.left)-PAD_X, dr=Math.max(lr.right,rr.right)+PAD_X;
-    const dt=Math.min(lr.top,rr.top)-PAD_UP, db=Math.max(lr.bottom,rr.bottom)+PAD_DN;
-    if (cx>=dl && cx<=dr && cy>=dt && cy<=db){ return cx < (Math.min(lr.left,rr.left)+Math.max(lr.right,rr.right))/2 ? "left" : "right"; }
-  }
+function rightZone(cx, cy){                        // right side: inside the 🚬 SHOOT halo = fire, else JUMP
+  const F=btnEls.fire;
   if (F){ const z=zoneRect(F,PAD_X,PAD_UP,PAD_DN); if(cx>=z.l&&cx<=z.r&&cy>=z.t&&cy<=z.b) return "fire"; }
   return "jump";
 }
 function onScreenButton(cx, cy){ const r=canvas.getBoundingClientRect(); const px=(cx-r.left)*(VW/r.width), py=(cy-r.top)*(VH/r.height);
   for(const b of uiButtons){ if(px>=b.x&&px<=b.x+b.w&&py>=b.y&&py<=b.y+b.h) return true; } return false; }
-const touchCtl=new Map();   // touch identifier -> "left"|"right"|"fire"|"jump"
+let stickId=null;            // identifier of the touch currently driving the joystick (one at a time)
+const touchCtl=new Map();    // touch identifier -> {kind:"stick",ox,oy,dir} | {kind:"fire"|"jump"}
 function refreshKeys(){
   let l=false,r=false,f=false,j=false;
-  for (const z of touchCtl.values()){ if(z==="left")l=true; else if(z==="right")r=true; else if(z==="fire")f=true; else if(z==="jump")j=true; }
+  for (const v of touchCtl.values()){
+    if (v.kind==="stick"){ if(v.dir<0) l=true; else if(v.dir>0) r=true; }
+    else if (v.kind==="fire") f=true;
+    else if (v.kind==="jump") j=true;
+  }
   keys.left=l; keys.right=r; keys.fire=f; keys.jump=j;
-  if(btnEls.left) btnEls.left.classList.toggle("on",l);
-  if(btnEls.right) btnEls.right.classList.toggle("on",r);
   if(btnEls.fire) btnEls.fire.classList.toggle("on",f);
   if(btnEls.jump) btnEls.jump.classList.toggle("on",j);
 }
@@ -491,7 +506,14 @@ function tStart(e){
   if (G.scene!=="play") return;                                  // menus: canvas handler navigates
   for (const t of e.changedTouches){
     if (onScreenButton(t.clientX,t.clientY)) continue;           // leave the ≡ MENU tap to handleClick
-    touchCtl.set(t.identifier, ctlZone(t.clientX,t.clientY));
+    if (inStickZone(t.clientX)){
+      if (stickId!==null) continue;                              // one joystick at a time
+      stickId=t.identifier;
+      touchCtl.set(t.identifier, {kind:"stick", ox:t.clientX, oy:t.clientY, dir:0});
+      showJoy(t.clientX, t.clientY);
+    } else {
+      touchCtl.set(t.identifier, {kind:rightZone(t.clientX,t.clientY)});
+    }
   }
   refreshKeys();
   if (e.cancelable) e.preventDefault();
@@ -499,11 +521,27 @@ function tStart(e){
 function tMove(e){
   if (G.scene!=="play" || !touchCtl.size) return;
   let changed=false;
-  for (const t of e.changedTouches){ if(touchCtl.has(t.identifier)){ const z=ctlZone(t.clientX,t.clientY); if(touchCtl.get(t.identifier)!==z){ touchCtl.set(t.identifier,z); changed=true; } } }
+  for (const t of e.changedTouches){
+    const v=touchCtl.get(t.identifier);
+    if (!v || v.kind!=="stick") continue;                        // only the joystick touch slides; jump/fire are fixed
+    let dx=t.clientX-v.ox, dy=t.clientY-v.oy;
+    const d=Math.hypot(dx,dy);
+    if (d>JOY_RADIUS){ const s=JOY_RADIUS/d; dx*=s; dy*=s; }      // clamp the knob inside the base ring
+    moveKnob(dx,dy);
+    const ndir = dx<-JOY_DEAD ? -1 : (dx>JOY_DEAD ? 1 : 0);      // only the horizontal axis steers
+    if (ndir!==v.dir){ v.dir=ndir; changed=true; }
+  }
   if (changed) refreshKeys();
   if (e.cancelable) e.preventDefault();
 }
-function tEnd(e){ for (const t of e.changedTouches) touchCtl.delete(t.identifier); refreshKeys(); }
+function tEnd(e){
+  for (const t of e.changedTouches){
+    if (!touchCtl.has(t.identifier)) continue;
+    if (t.identifier===stickId){ stickId=null; hideJoy(); }
+    touchCtl.delete(t.identifier);
+  }
+  refreshKeys();
+}
 addEventListener("touchstart", tStart, {passive:false});
 addEventListener("touchmove", tMove, {passive:false});
 addEventListener("touchend", tEnd, {passive:true});
@@ -678,7 +716,7 @@ function startGame(){
     return;
   }
   resetWorld(false);
-  touchCtl.clear(); keys.jump=keys.left=keys.right=keys.fire=false;   // no stale held inputs from menu taps
+  touchCtl.clear(); stickId=null; hideJoy(); keys.jump=keys.left=keys.right=keys.fire=false;   // no stale held inputs from menu taps
   G.scene="play"; G.paused=false;
   if (ac() && actx.state==="suspended") actx.resume();
   Music.setTheme(0); Music.start();
