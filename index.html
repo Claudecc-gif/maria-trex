@@ -143,18 +143,19 @@ const Board = {
   url(){ return "https://getpantry.cloud/apiv1/pantry/"+BOARD.pantryId+"/basket/"+BOARD.basket; },
   localAll(){ try{ return JSON.parse(localStorage.getItem("maria_scores")||"[]"); }catch(e){ return []; } },
   localSet(a){ try{ localStorage.setItem("maria_scores", JSON.stringify(a)); }catch(e){} },
-  // collapse to one best entry per name, sort, trim
+  // rank = 66% kush + 33% distance + a HIDDEN secret-collectible bonus (never shown)
+  rankVal(e){ return 0.66*(e.score||0) + 0.33*(e.dist||0) + 5*(e.hidden||0); },
+  // collapse to one best entry per name (by rank), sort by rank, trim
   normalize(arr){
     const best=Object.create(null);
     for (const e of (arr||[])){
       if (!e || typeof e.score!=="number" || !isFinite(e.score)) continue;
       const name=(e.name||"???").toString().toUpperCase().slice(0,10) || "???";
+      const ent={ name, score:Math.max(0,Math.floor(e.score)), dist:Math.max(0,Math.floor(e.dist||0)), hidden:Math.max(0,Math.floor(e.hidden||0)), ts:e.ts||0 };
       const cur=best[name];
-      const score=Math.max(0,Math.floor(e.score)), dist=Math.max(0,Math.floor(e.dist||0));
-      if (!cur || score>cur.score || (score===cur.score && dist>cur.dist))
-        best[name]={ name, score, dist, ts:e.ts||0 };
+      if (!cur || this.rankVal(ent)>this.rankVal(cur)) best[name]=ent;
     }
-    return Object.values(best).sort((a,b)=> b.score-a.score || b.dist-a.dist).slice(0, BOARD.max);
+    return Object.values(best).sort((a,b)=> this.rankVal(b)-this.rankVal(a)).slice(0, BOARD.max);
   },
   statusLine(){
     if (!this.global()) return "📱 saved on this device";
@@ -216,6 +217,7 @@ function setKey(k,v){
     if (k==="enter") onConfirm();
     if (k==="s" && (G.scene==="title")) openShop();
     if (k==="escape" && G.scene==="shop") G.scene="title";
+    if (k==="escape" && (G.scene==="play"||G.scene==="paused")) quitToMenu();
   }
 }
 addEventListener("keydown", e=>{
@@ -388,9 +390,9 @@ function roundRect(x,y,w,h,r){ ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w
 
 // ---------------- state ----------------
 const G = { scene:"intro", paused:false };
-let player, cam, platforms, pits, weeds, floatPickups, enemies, bongs, stars, cannons, wings, projectiles, bossShots, particles, banners;
+let player, cam, platforms, pits, weeds, floatPickups, enemies, bongs, stars, cannons, wings, hiddens, projectiles, bossShots, particles, banners;
 let genX, score, lives, distance, frameCount, flash, hitTimer, dead, deadTimer, overReason;
-let speedTimer, starTimer, flyTimer, ammo, fireCd, level, levelFlash;
+let speedTimer, starTimer, flyTimer, ammo, fireCd, level, levelFlash, hidden;
 let chaseX, chaseSpeed, bribeUsed, hanging, hangTimer, hangX, slowmo, bossAlive, bossSpawnDist;
 let castleT, towerLevel;           // castle-entry cinematic timer; last level a KL-Towers obstacle spawned
 let demoMode=false;
@@ -402,9 +404,9 @@ function resetWorld(forDemo){
   player = { x:140, y:GROUND_TOP-58, w:46, h:58, vx:0, vy:0, onGround:false, facing:1,
              coyote:0, buffer:0, jumpHeld:false, runPhase:0, blink:0, squash:0, stretch:1, trampHold:false };
   cam={x:0,y:0};
-  platforms=[]; pits=[]; weeds=[]; floatPickups=[]; enemies=[]; bongs=[]; stars=[]; cannons=[]; wings=[];
+  platforms=[]; pits=[]; weeds=[]; floatPickups=[]; enemies=[]; bongs=[]; stars=[]; cannons=[]; wings=[]; hiddens=[];
   projectiles=[]; bossShots=[]; particles=[]; banners=[];
-  genX=0; score=0; lives=3; distance=0; frameCount=0; flash=0; hitTimer=0;
+  genX=0; score=0; lives=3; distance=0; frameCount=0; flash=0; hitTimer=0; hidden=0;
   dead=false; deadTimer=0; overReason="busted";
   speedTimer=0; starTimer=0; flyTimer=0; ammo=0; fireCd=0; level=0; levelFlash=0;
   chaseX=-540; chaseSpeed=3.05; bribeUsed=false; hanging=false; hangTimer=0; hangX=0; slowmo=0;
@@ -544,6 +546,12 @@ function generateSegment(){
     stars.push(mkStar(fx+fw/2-16, fy-46));
   }
 
+  // 🔮 SECRET collectible — rare, floats high & easy to miss; counts toward rank, never shown
+  if (Math.random()<0.07 && sx>1700){
+    const hx=sx+irnd(40,SEG_W-60), hy=Math.max(SKY_TOP+30, GROUND_TOP-irnd(300,640));
+    hiddens.push(mkHidden(hx, hy));
+  }
+
   // BONG speed
   if (Math.random()<0.16 && sx>900){
     const bx=sx+irnd(60,SEG_W-60);
@@ -603,6 +611,7 @@ function mkEnemy(type, x){
 function mkWeed(x,y,floaty=false){ return {x,y,w:24,h:30,taken:false,bob:rnd(0,6.28),floaty}; }
 function mkStar(x,y){ return {x,y,w:32,h:32,taken:false,bob:rnd(0,6.28),t:rnd(0,6.28)}; }
 function mkWings(x,y){ return {x,y,w:42,h:30,taken:false,bob:rnd(0,6.28)}; }
+function mkHidden(x,y){ return {x,y,w:20,h:20,taken:false,bob:rnd(0,6.28),t:rnd(0,6.28)}; }  // secret rank-only collectible
 function inPit(x){ return pits.some(p=> x>=p.x && x<=p.x+p.w); }
 
 // ---------------- update ----------------
@@ -628,6 +637,7 @@ function update(){
   stars = stars.filter(o=>!o.taken && o.x>cull);
   cannons = cannons.filter(o=>!o.taken && o.x>cull);
   wings = wings.filter(o=>!o.taken && o.x>cull);
+  hiddens = hiddens.filter(o=>!o.taken && o.x>cull);
   pits = pits.filter(p=> p.x+p.w>cull);
 
   if (dead){ updateDead(); return; }
@@ -851,6 +861,10 @@ function updatePickups(){
     if (aabb(player,c)){ c.taken=true; ammo=Math.min(AMMO_CAP, ammo+14); sfx.bong(); flash=8; addBanner("BLOW CANNON!","Press F / 🚬 to fire joints (max "+AMMO_CAP+")","#ffd54a",110); } }
   for (const wg of wings){ if(wg.taken)continue; wg.bob+=0.06;
     if (aabb(player,wg)){ wg.taken=true; flyTimer=60*7; sfx.star(); flash=10; screenShakeAdd(6); addBanner("KUSH WINGS! 🪽","FLY — hold JUMP to soar","#bfe6ff",120); puff(wg.x+wg.w/2,wg.y,18,"#cfeaff",true); } }
+  // secret collectible: bumps the hidden rank counter, no HUD/banner reveal
+  for (const hd of hiddens){ if(hd.taken)continue; hd.bob+=0.08; hd.t+=0.1;
+    if (aabb(player,hd)){ hd.taken=true; hidden++; sfx.collect();
+      for(let i=0;i<10;i++) particles.push({x:hd.x+hd.w/2,y:hd.y+hd.h/2,vx:rnd(-2,2),vy:rnd(-2.4,.4),life:irnd(18,30),max:30,r:rnd(2,4),col:`hsl(${irnd(270,320)} 90% 70%)`,kind:"spark"}); } }
 }
 
 function updateChase(){
@@ -939,14 +953,18 @@ function die(reason){
 }
 function lavaSplash(x){ for(let i=0;i<16;i++) particles.push({x,y:GROUND_TOP+6,vx:rnd(-4,4),vy:rnd(-8,-2),life:irnd(20,40),max:40,r:rnd(3,7),col:`hsl(${irnd(10,40)} 100% 55%)`,kind:"spark"}); }
 
-function gameOver(){
-  G.scene="over";
-  DB.bank = DB.bank + score;             // bank this run's weed for the shop
+function bankAndSubmit(){
+  DB.bank = DB.bank + score;             // bank this run's kush for the shop
   if (score>DB.best) DB.best=score;
   if (distance>DB.bestDist) DB.bestDist=distance;
-  // submit to the high-score list (local now; global too when a Pantry ID is set)
   const nm = (DB.name||"PLAYER").toUpperCase().slice(0,10) || "PLAYER";
-  Board.submit({ name:nm, score:Math.floor(score), dist:Math.floor(distance), ts:Date.now() });
+  Board.submit({ name:nm, score:Math.floor(score), dist:Math.floor(distance), hidden:Math.floor(hidden), ts:Date.now() });
+}
+function gameOver(){ G.scene="over"; bankAndSubmit(); }
+// in-game "back to menu": bank + submit the run (nothing lost), then to the title
+function quitToMenu(){
+  if (G.scene==="play"||G.scene==="paused"){ bankAndSubmit(); }
+  G.scene="title"; G.paused=false; Board.refresh();
 }
 
 // particles + shake
@@ -1010,6 +1028,7 @@ function render(){
   else if (G.scene==="shop") drawShop();
   else if (G.scene==="over") drawGameOver();
   else if (G.scene==="paused") drawPaused();
+  if (G.scene==="play") drawMenuButton();
 
   syncNameInput();
 }
@@ -1228,6 +1247,16 @@ function drawPickups(){
   for(const b of bongs){ if(b.taken)continue; if(b.x<cam.x-40||b.x>cam.x+VW+40)continue; drawBong(b.x,b.y+Math.sin(b.bob)*4); }
   for(const s of stars){ if(s.taken)continue; if(s.x<cam.x-40||s.x>cam.x+VW+40)continue; drawCaliStar(s.x,s.y+Math.sin(s.bob)*5,s.t); }
   for(const wg of wings){ if(wg.taken)continue; if(wg.x<cam.x-40||wg.x>cam.x+VW+40)continue; drawWingsPickup(wg.x,wg.y+Math.sin(wg.bob)*5); }
+  for(const hd of hiddens){ if(hd.taken)continue; if(hd.x<cam.x-40||hd.x>cam.x+VW+40)continue; drawHiddenPickup(hd.x,hd.y+Math.sin(hd.bob)*5,hd.t); }
+}
+function drawHiddenPickup(x,y,t){
+  // subtle shimmering violet gem — easy to overlook
+  ctx.save(); ctx.translate(x+10,y+10); ctx.rotate(t*0.6);
+  const a=0.35+0.35*Math.sin(t*1.4);
+  ctx.globalAlpha=a; ctx.shadowColor="#c79bff"; ctx.shadowBlur=10;
+  ctx.fillStyle="#b98cff"; ctx.beginPath(); ctx.moveTo(0,-8); ctx.lineTo(6,0); ctx.lineTo(0,8); ctx.lineTo(-6,0); ctx.closePath(); ctx.fill();
+  ctx.shadowBlur=0; ctx.globalAlpha=Math.min(1,a+0.3); ctx.fillStyle="#fff"; ctx.fillRect(-1,-2,2,2);
+  ctx.globalAlpha=1; ctx.restore();
 }
 function drawWingsPickup(x,y){
   ctx.save(); ctx.translate(x+21,y+15);
@@ -2014,10 +2043,14 @@ function drawGameOver(){
   ctx.textAlign="center"; ctx.fillStyle="#fff"; ctx.globalAlpha=0.6+0.4*Math.sin(frameCount*0.12); ctx.font="bold 15px 'Trebuchet MS'";
   ctx.fillText("Press ENTER / tap to run again",VW/2,484); ctx.globalAlpha=1; ctx.textAlign="left";
 }
+// small in-game button (top, clear of the controls) → back to the main menu
+function drawMenuButton(){ button(VW/2+76, 8, 104, 28, "≡ MENU", quitToMenu, "rgba(8,12,24,.62)"); }
 function drawPaused(){
-  ctx.fillStyle="rgba(6,10,20,.5)"; ctx.fillRect(0,0,VW,VH);
-  ctx.textAlign="center"; ctx.fillStyle="#fff"; ctx.font="bold 40px 'Trebuchet MS'"; ctx.fillText("PAUSED",VW/2,VH/2);
-  ctx.font="16px 'Trebuchet MS'"; ctx.fillStyle="#9fb4d6"; ctx.fillText("Press P to resume",VW/2,VH/2+34); ctx.textAlign="left";
+  ctx.fillStyle="rgba(6,10,20,.62)"; ctx.fillRect(0,0,VW,VH);
+  ctx.textAlign="center"; ctx.fillStyle="#fff"; ctx.font="bold 40px 'Trebuchet MS'"; ctx.fillText("PAUSED",VW/2,VH/2-54); ctx.textAlign="left";
+  button(VW/2-220,VH/2-8,200,50,"▶  RESUME",()=>togglePause());
+  button(VW/2+20,VH/2-8,200,50,"≡  MAIN MENU",()=>quitToMenu(),"rgba(255,255,255,.14)");
+  ctx.textAlign="center"; ctx.font="14px 'Trebuchet MS'"; ctx.fillStyle="#9fb4d6"; ctx.fillText("P to resume",VW/2,VH/2+78); ctx.textAlign="left";
 }
 
 // ======================================================================
