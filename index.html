@@ -28,6 +28,8 @@
   }
   .touch { position:fixed; bottom:calc(14px + env(safe-area-inset-bottom,0px)); display:none; user-select:none; -webkit-user-select:none; z-index:5; pointer-events:none; }
   .pad { display:flex; gap:10px; }
+  #rightCtl .pad { gap:30px; }   /* push the SHOOT button further left, away from the big jump button */
+  #safeTopProbe { position:fixed; top:0; left:0; width:0; height:env(safe-area-inset-top,0px); pointer-events:none; }
   .btn {
     width:62px; height:62px; border-radius:14px; font-size:24px; font-weight:bold;
     background:rgba(255,255,255,.14); border:2px solid rgba(255,255,255,.35); color:#fff;
@@ -69,6 +71,7 @@
     <div class="btn" id="jumpBtn" data-key="jump">⤒</div>
   </div></div>
   <input id="nameInput" maxlength="10" placeholder="ENTER YOUR NAME" autocomplete="off" spellcheck="false" />
+  <div id="safeTopProbe"></div>
   <div id="iosHint">📲 Fullscreen: tap <b>Share</b> ↑ then <b>Add to Home Screen</b><span class="x">✕</span></div>
 
 <script>
@@ -91,17 +94,23 @@ const ctx = canvas.getContext("2d");
 // no letterbox, no distortion (canvas aspect always matches the screen).
 const VH = 540;
 let VW = 960;
+let safeTop = 0;                      // status-bar / notch inset in canvas px (keeps the HUD visible)
 function fitCanvas(){
   const w = window.innerWidth || 960, h = window.innerHeight || 540;
   VW = Math.max(280, Math.round(VH * (w / h)));
   canvas.width = VW; canvas.height = VH;
   ctx.imageSmoothingEnabled = false;
+  const probe=document.getElementById("safeTopProbe");
+  safeTop = probe ? Math.round(probe.getBoundingClientRect().height * (VH / h)) : 0;
 }
 fitCanvas();
 addEventListener("resize", fitCanvas);
 addEventListener("orientationchange", fitCanvas);
 // zoom the world OUT on narrow/portrait screens so you can see more of the surroundings (1 = no zoom)
 function viewZoom(){ return clamp(VW/560, 0.56, 1); }
+// right edge of the VISIBLE world (accounts for zoom-out) — used so off-screen-right objects aren't
+// culled while still inside the zoomed-out view (which caused things to "pop in" late on portrait).
+function camRightX(){ return cam.x + VW/viewZoom() + 120; }
 
 // ---------------- constants ----------------
 const GROUND_TOP = VH - 84;
@@ -971,7 +980,8 @@ function update(){
   // camera (x + vertical follow so you can climb high); zoomed out on portrait → see more around you
   const Z=viewZoom(), viewW=VW/Z, viewH=VH/Z;
   cam.x=lerp(cam.x, Math.max(0,player.x-viewW*0.34), 0.16);
-  const tcy=clamp(player.y-viewH*0.56, SKY_TOP-40, 0);
+  const vA=(VW<600)?0.66:0.56;                          // portrait: floor sits lower on screen (more sky above)
+  const tcy=clamp(player.y-viewH*vA, SKY_TOP-40, 0);
   cam.y=lerp(cam.y, tcy, 0.12);
 
   // run anim
@@ -1036,7 +1046,7 @@ function updateProjectiles(){
       if (aabb({x:j.x-4,y:j.y-3,w:10,h:8}, e)){ damageEnemy(e,1,"joint"); j.life=0; flash=Math.max(flash,4); break; }
     }
   }
-  projectiles=projectiles.filter(j=> j.life>0 && j.x>cam.x-80 && j.x<cam.x+VW+200);
+  projectiles=projectiles.filter(j=> j.life>0 && j.x>cam.x-80 && j.x<camRightX());
 }
 function updateBossShots(invincible){
   for (const b of bossShots){
@@ -1044,7 +1054,7 @@ function updateBossShots(invincible){
     if (frameCount%2===0) particles.push({x:b.x,y:b.y,vx:0,vy:0,life:8,max:8,r:2,col:"rgba(255,120,70,.6)",kind:"smoke"});
     if (hitTimer<=0 && !invincible && !dead && !hanging && aabb({x:b.x-4,y:b.y-4,w:8,h:8}, player)){ b.life=0; hurt(); }
   }
-  bossShots = bossShots.filter(b=> b.life>0 && b.x>cam.x-100 && b.x<cam.x+VW+140 && b.y<DEATH_Y);
+  bossShots = bossShots.filter(b=> b.life>0 && b.x>cam.x-100 && b.x<camRightX() && b.y<DEATH_Y);
 }
 
 function updateEnemies(invincible){
@@ -1060,7 +1070,7 @@ function updateEnemies(invincible){
       e.vx=clamp(dx*0.007, -1.7, 1.3);
       // 🔫 narco boss shoots back — single aimed bullets
       if (e.shootCd>0) e.shootCd--;
-      const onScreen = e.x>cam.x-40 && e.x<cam.x+VW+40;
+      const onScreen = e.x>cam.x-40 && e.x<camRightX();
       if (e.shootCd<=0 && onScreen && !dead && !hanging){
         const sx0=e.x+e.w/2, sy0=e.y+e.h*0.42;
         const tx=player.x+player.w/2-sx0, ty=player.y+player.h*0.5-sy0;
@@ -1440,7 +1450,7 @@ function cloud(x,y,s){ ctx.beginPath(); ctx.arc(x,y,18*s,0,6.28); ctx.arc(x+20*s
 function drawGroundAndHazards(th){
   // every PIT renders as a clearly visible dark chasm with warning edges
   for(const p of pits){
-    if (p.x+p.w<cam.x-60 || p.x>cam.x+VW+60) continue;
+    if (p.x+p.w<cam.x-60 || p.x>camRightX()) continue;
     const ly=GROUND_TOP+2;
     const g=ctx.createLinearGradient(0,ly,0,ly+220);
     g.addColorStop(0,"rgba(6,8,14,.92)"); g.addColorStop(1,"rgba(2,3,6,1)");
@@ -1456,7 +1466,7 @@ function drawGroundAndHazards(th){
   // glowing lava on top of the chasm (lava theme)
   if (th.lava){
     for(const p of pits){
-      if (p.x+p.w<cam.x-60 || p.x>cam.x+VW+60) continue;
+      if (p.x+p.w<cam.x-60 || p.x>camRightX()) continue;
       const ly=GROUND_TOP+8;
       const g=ctx.createLinearGradient(0,ly,0,ly+120); g.addColorStop(0,"#ffd24a"); g.addColorStop(.4,"#ff6a1a"); g.addColorStop(1,"#8a1a08");
       ctx.fillStyle=g;
@@ -1470,7 +1480,7 @@ function drawGroundAndHazards(th){
 
 function drawPlatforms(th){
   for(const p of platforms){
-    if (p.x+p.w<cam.x-60 || p.x>cam.x+VW+60) continue;
+    if (p.x+p.w<cam.x-60 || p.x>camRightX()) continue;
     if (p.ground) drawGround(p,th);
     else if (p.castleGate) drawCastleGate(p);
     else if (p.tower) drawTowerColumn(p,th);
@@ -1548,11 +1558,11 @@ function drawTramp(p){
 
 // ----- pickups -----
 function drawPickups(){
-  for(const arr of [weeds,floatPickups]) for(const o of arr){ if(o.taken)continue; if(o.x<cam.x-40||o.x>cam.x+VW+40)continue; drawWeed(o.x,o.y+Math.sin(o.bob)*4); }
-  for(const b of bongs){ if(b.taken)continue; if(b.x<cam.x-40||b.x>cam.x+VW+40)continue; drawBong(b.x,b.y+Math.sin(b.bob)*4); }
-  for(const s of stars){ if(s.taken)continue; if(s.x<cam.x-40||s.x>cam.x+VW+40)continue; drawCaliStar(s.x,s.y+Math.sin(s.bob)*5,s.t); }
-  for(const wg of wings){ if(wg.taken)continue; if(wg.x<cam.x-40||wg.x>cam.x+VW+40)continue; drawWingsPickup(wg.x,wg.y+Math.sin(wg.bob)*5); }
-  for(const hd of hiddens){ if(hd.taken)continue; if(hd.x<cam.x-40||hd.x>cam.x+VW+40)continue; drawHiddenPickup(hd.x,hd.y+Math.sin(hd.bob)*5,hd.t); }
+  for(const arr of [weeds,floatPickups]) for(const o of arr){ if(o.taken)continue; if(o.x<cam.x-40||o.x>camRightX())continue; drawWeed(o.x,o.y+Math.sin(o.bob)*4); }
+  for(const b of bongs){ if(b.taken)continue; if(b.x<cam.x-40||b.x>camRightX())continue; drawBong(b.x,b.y+Math.sin(b.bob)*4); }
+  for(const s of stars){ if(s.taken)continue; if(s.x<cam.x-40||s.x>camRightX())continue; drawCaliStar(s.x,s.y+Math.sin(s.bob)*5,s.t); }
+  for(const wg of wings){ if(wg.taken)continue; if(wg.x<cam.x-40||wg.x>camRightX())continue; drawWingsPickup(wg.x,wg.y+Math.sin(wg.bob)*5); }
+  for(const hd of hiddens){ if(hd.taken)continue; if(hd.x<cam.x-40||hd.x>camRightX())continue; drawHiddenPickup(hd.x,hd.y+Math.sin(hd.bob)*5,hd.t); }
 }
 function drawHiddenPickup(x,y,t){
   // subtle shimmering violet gem — easy to overlook
@@ -1578,7 +1588,7 @@ function drawWingsPickup(x,y){
   ctx.shadowBlur=0; ctx.fillStyle="#ffd54a"; ctx.beginPath(); ctx.arc(0,0,3.5,0,6.28); ctx.fill();
   ctx.restore();
 }
-function drawCannonPickups(){ for(const c of cannons){ if(c.taken)continue; if(c.x<cam.x-40||c.x>cam.x+VW+40)continue; drawCannon(c.x,c.y+Math.sin(c.bob)*4); } }
+function drawCannonPickups(){ for(const c of cannons){ if(c.taken)continue; if(c.x<cam.x-40||c.x>camRightX())continue; drawCannon(c.x,c.y+Math.sin(c.bob)*4); } }
 
 function drawWeed(x,y){
   ctx.save(); ctx.translate(x+12,y+18);
@@ -1640,7 +1650,7 @@ function drawProjectiles(){
 }
 function drawBossShots(){
   for(const b of bossShots){
-    if (b.x<cam.x-30||b.x>cam.x+VW+30) continue;
+    if (b.x<cam.x-30||b.x>camRightX()) continue;
     ctx.save(); ctx.translate(b.x,b.y);
     ctx.shadowColor="#ff5a2a"; ctx.shadowBlur=9;
     ctx.fillStyle="#ffe08a"; ctx.beginPath(); ctx.arc(0,0,3.6,0,6.28); ctx.fill();
@@ -1651,7 +1661,7 @@ function drawBossShots(){
 
 // ----- enemies -----
 function drawEnemies(){
-  for(const e of enemies){ if(e.x<cam.x-80||e.x>cam.x+VW+80)continue; if(e.boss) drawBoss(e); else drawCop(e); }
+  for(const e of enemies){ if(e.x<cam.x-80||e.x>camRightX())continue; if(e.boss) drawBoss(e); else drawCop(e); }
 }
 function drawCop(e){
   const x=e.x,y=e.y,w=e.w,h=e.h;
@@ -2049,6 +2059,7 @@ function drawCastleEntry(){
 // ----- HUD -----
 function drawHUDCompact(){
   ctx.save();
+  ctx.translate(0, 14+safeTop);     // drop the bar below the top edge / status bar so it's clearly visible
   ctx.fillStyle="rgba(8,12,24,.55)"; roundRect(6,6,VW-12,28,8); ctx.fill();
   ctx.fillStyle="#fff"; ctx.font="bold 15px 'Trebuchet MS'"; ctx.textBaseline="middle"; ctx.textAlign="left";
   ctx.fillText(score+"🌿",12,20);
@@ -2437,7 +2448,7 @@ function drawGameOver(){
 }
 // small in-game button (top, clear of the controls) → back to the main menu
 function drawMenuButton(){
-  if (VW<720) button(VW-58, 8, 50, 22, "≡", quitToMenu, "rgba(8,12,24,.66)");
+  if (VW<720) button(VW-58, 14+safeTop, 50, 22, "≡", quitToMenu, "rgba(8,12,24,.66)");
   else button(VW/2+76, 8, 104, 28, "≡ MENU", quitToMenu, "rgba(8,12,24,.62)");
 }
 function drawPaused(){
