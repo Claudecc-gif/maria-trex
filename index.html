@@ -46,6 +46,15 @@
   }
   #nameInput::placeholder { color:#6f8f72; font-weight:normal; letter-spacing:.5px; text-transform:none; }
   @media (pointer:coarse) { .touch { display:flex; } }
+  #iosHint {
+    position:fixed; left:50%; top:calc(8px + env(safe-area-inset-top,0px)); transform:translateX(-50%);
+    display:none; z-index:30; max-width:94vw;
+    background:rgba(10,18,12,.94); color:#fff; border:2px solid #7CFC6A; border-radius:12px;
+    padding:8px 12px; font:600 13px/1.35 "Trebuchet MS",system-ui,sans-serif; text-align:center;
+    box-shadow:0 8px 26px rgba(0,0,0,.55);
+  }
+  #iosHint b { color:#7CFC6A; }
+  #iosHint .x { margin-left:10px; color:#9fb4d6; font-weight:bold; }
 </style>
 </head>
 <body>
@@ -59,6 +68,7 @@
     <div class="btn" id="jumpBtn" data-key="jump">⤒</div>
   </div></div>
   <input id="nameInput" maxlength="10" placeholder="ENTER YOUR NAME" autocomplete="off" spellcheck="false" />
+  <div id="iosHint">📲 Fullscreen: tap <b>Share</b> ↑ then <b>Add to Home Screen</b><span class="x">✕</span></div>
 
 <script>
 "use strict";
@@ -1994,17 +2004,19 @@ function drawBoardRows(x, y, w, count, hiName){
     ctx.fillText(Board.status==="loading"?"Loading scores…":"No scores yet — be the first! 🌿", x+w/2, y+16);
     ctx.textAlign="left"; return;
   }
-  const rh=22;
+  const rh=22, sm=w<320;
+  const distW=sm?36:52, kushW=sm?44:58;   // right-side columns (from the right edge): dist, kush, then TOTAL
   for (let i=0;i<rows.length;i++){
-    const r=rows[i], ry=y+i*rh+13;
-    if (hiName && r.name===hiName){ ctx.fillStyle="rgba(124,252,106,.20)"; roundRect(x-8,ry-15,w+16,20,6); ctx.fill(); }
+    const r=rows[i], ry=y+i*rh+13, me=hiName&&r.name===hiName;
+    if (me){ ctx.fillStyle="rgba(124,252,106,.20)"; roundRect(x-8,ry-15,w+16,20,6); ctx.fill(); }
     ctx.textAlign="left";
     ctx.fillStyle = i===0?"#ffd54a":i===1?"#cfd8e8":i===2?"#e0a878":"#9fb4d6";
-    ctx.font="bold 15px 'Trebuchet MS'"; ctx.fillText((i+1)+".", x, ry);
-    ctx.fillStyle="#fff"; ctx.font="15px 'Trebuchet MS'"; ctx.fillText((r.name||"???").slice(0,10), x+28, ry);
+    ctx.font="bold "+(sm?12:15)+"px 'Trebuchet MS'"; ctx.fillText((i+1)+".", x, ry);
+    ctx.fillStyle = me?"#eaffea":"#fff"; ctx.font=(sm?12:15)+"px 'Trebuchet MS'"; ctx.fillText((r.name||"???").slice(0,10), x+(sm?20:26), ry);
     ctx.textAlign="right";
-    ctx.fillStyle="#9fe89f"; ctx.font="bold 14px 'Trebuchet MS'"; ctx.fillText(r.score+"🌿", x+w-50, ry);
-    ctx.fillStyle="#8fa6c8"; ctx.font="12px 'Trebuchet MS'"; ctx.fillText((r.dist||0)+"m", x+w, ry);
+    ctx.fillStyle="#8fa6c8"; ctx.font=(sm?10:12)+"px 'Trebuchet MS'"; ctx.fillText((r.dist||0)+"m", x+w, ry);                                  // distance
+    ctx.fillStyle="#9fe89f"; ctx.font="bold "+(sm?11:13)+"px 'Trebuchet MS'"; ctx.fillText(r.score+"🌿", x+w-distW, ry);                       // kush
+    ctx.fillStyle="#ffd54a"; ctx.font="bold "+(sm?13:16)+"px 'Trebuchet MS'"; ctx.fillText(String(Math.round(Board.rankVal(r))), x+w-distW-kushW, ry); // TOTAL points (yellow)
     ctx.textAlign="left";
   }
 }
@@ -2114,7 +2126,18 @@ function drawGameOver(){
   const hanged=overReason==="hanged";
   ctx.fillStyle="#ff7b7b"; ctx.font="bold 36px 'Trebuchet MS'";
   ctx.fillText(hanged?"HANGED!":(overReason==="lava"?"BURNED!":(overReason==="fell"?"WIPEOUT!":"BUSTED!")),cx,104);
-  ctx.fillStyle="#fff"; ctx.font="bold 22px 'Trebuchet MS'"; ctx.fillText(`${score} kush  ·  ${distance} m`,cx,140);
+  // run summary: kush · distance · TOTAL points (yellow), auto-shrunk to fit
+  {
+    const total=Math.round(Board.rankVal({score:score,dist:distance,hidden:hidden}));
+    const a=`${score}🌿   ${distance}m   `, b=`${total} pts`;
+    let fs=22; ctx.font="bold "+fs+"px 'Trebuchet MS'";
+    while ((ctx.measureText(a).width+ctx.measureText(b).width)>w-28 && fs>12){ fs--; ctx.font="bold "+fs+"px 'Trebuchet MS'"; }
+    const wa=ctx.measureText(a).width, wb=ctx.measureText(b).width, xs=cx-(wa+wb)/2;
+    ctx.textAlign="left";
+    ctx.fillStyle="#fff"; ctx.fillText(a, xs, 140);
+    ctx.fillStyle="#ffd54a"; ctx.fillText(b, xs+wa, 140);
+    ctx.textAlign="center";
+  }
   ctx.fillStyle="#9fe89f"; ctx.font="13px 'Trebuchet MS'"; ctx.fillText(`+${score}🌿 banked · Bank ${DB.bank}`,cx,164);
   const nb=(score>=DB.best&&score>0)?"NEW BEST! ":"";
   ctx.fillStyle="#ffd54a"; ctx.font="13px 'Trebuchet MS'"; ctx.fillText(`${nb}Best ${DB.best}🌿 · ${DB.bestDist} m`,cx,184);
@@ -2173,6 +2196,19 @@ requestAnimationFrame(loop);
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => navigator.serviceWorker.register("sw.js").catch(()=>{}));
 }
+/* one-time iOS hint: Add to Home Screen = true fullscreen (Safari blocks the in-tab fullscreen API) */
+(function(){
+  var el=document.getElementById("iosHint"); if(!el) return;
+  var isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform==="MacIntel" && navigator.maxTouchPoints>1);
+  var standalone = (navigator.standalone===true) || (window.matchMedia && (matchMedia("(display-mode: standalone)").matches || matchMedia("(display-mode: fullscreen)").matches));
+  var seen=false; try{ seen=!!localStorage.getItem("maria_ios_hint"); }catch(e){}
+  if (isIOS && !standalone && !seen){
+    el.style.display="block";
+    var dismiss=function(){ el.style.display="none"; try{ localStorage.setItem("maria_ios_hint","1"); }catch(e){} };
+    el.addEventListener("click", dismiss);
+    setTimeout(dismiss, 9000);
+  }
+})();
 </script>
 </body>
 </html>
