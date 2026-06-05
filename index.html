@@ -88,7 +88,7 @@ const GRAVITY = 0.72, JUMP_V = 14.4, JUMP_CUT = 6.0;
 const MOVE_SPD = 4.5, BOOST_SPD = 8.6, MAX_FALL = 18;
 const ACCEL = 0.75, FRICTION = 0.80, COYOTE = 7, BUFFER = 7;
 const SEG_W = 360, FIXED_DT = 1000/60;
-const TRAMP_BOUNCE = 37.0, STOMP_BOUNCE = 9.2;   // trampolines fling you WAY up
+const TRAMP_BOUNCE = 43.0, STOMP_BOUNCE = 9.2;   // trampolines fling you WAY up (uncut launch)
 const DEATH_Y = GROUND_TOP + 280;
 const LEVEL_LEN = 1180;            // metres per environment (more distance between levels)
 const SKY_TOP = GROUND_TOP - 760;  // how high the world goes (reach the wings up here)
@@ -400,7 +400,7 @@ function curSkin(){ return skinById(DB.skin); }
 function resetWorld(forDemo){
   const sk = curSkin();
   player = { x:140, y:GROUND_TOP-58, w:46, h:58, vx:0, vy:0, onGround:false, facing:1,
-             coyote:0, buffer:0, jumpHeld:false, runPhase:0, blink:0, squash:0, stretch:1 };
+             coyote:0, buffer:0, jumpHeld:false, runPhase:0, blink:0, squash:0, stretch:1, trampHold:false };
   cam={x:0,y:0};
   platforms=[]; pits=[]; weeds=[]; floatPickups=[]; enemies=[]; bongs=[]; stars=[]; cannons=[]; wings=[];
   projectiles=[]; bossShots=[]; particles=[]; banners=[];
@@ -433,9 +433,10 @@ function generateSegment(){
   level = Math.floor(distance/LEVEL_LEN);
   const th = curTheme();
 
-  // ground / pit
+  // ground / pit  (never a pit on a level-boundary segment — keep the castle run-through safe)
+  const lvX=LEVEL_LEN*10, nb=Math.ceil((sx+1)/lvX)*lvX, hasBoundary=(nb<sx+SEG_W && nb>0);
   const pitChance = 0.10 + diff*0.20;
-  if (Math.random()<pitChance && sx>1100){
+  if (Math.random()<pitChance && sx>1100 && !hasBoundary){
     const gap = irnd(95, 95+Math.floor(120*diff));
     const px = sx+irnd(60,150);
     pits.push({x:px,w:gap,lava:th.lava});
@@ -449,6 +450,11 @@ function generateSegment(){
   } else {
     platforms.push({x:sx,y:GROUND_TOP,w:SEG_W,h:VH-GROUND_TOP+260,ground:true});
   }
+  // 🏰 KUSH CASTLE gate straddling the level boundary — run THROUGH it into the next world
+  if (hasBoundary){
+    platforms.push({x:nb-170, y:GROUND_TOP, w:340, h:1, castleGate:true});
+    for (let k=0;k<3;k++) weeds.push(mkWeed(nb-30+k*30, GROUND_TOP-34));   // little reward at the gate
+  }
 
   // 🏙️ KL PETRONAS TWIN TOWERS — a special landmark obstacle, once per level.
   // Solid columns up high (block traversal), but an open archway at the base so you
@@ -457,14 +463,15 @@ function generateSegment(){
     const segLevel = Math.floor((sx/10)/LEVEL_LEN);
     const intoLevel = (sx/10) % LEVEL_LEN;
     if (towerLevel < segLevel && sx>1000 && intoLevel>180 && Math.random()<0.55){
-      const colW=46, gap=irnd(112,140), archH=104;
-      const baseX = sx + irnd(30, Math.max(40, SEG_W-2*colW-gap-30));
+      const colW=46, gap=irnd(150,190), archH=104;
+      const baseX = sx + irnd(20, Math.max(30, SEG_W-2*colW-gap-20));
       const x1=baseX, x2=baseX+colW+gap, midX=x1+colW+gap/2;
       const topY = GROUND_TOP - irnd(340,470);
       const bodyH = (GROUND_TOP-archH) - topY;
       if (bodyH>120 && !inPit(x1) && !inPit(x2) && !inPit(midX)){
-        platforms.push({x:x1,y:topY,w:colW,h:bodyH,block:true,tower:true});
-        platforms.push({x:x2,y:topY,w:colW,h:bodyH,block:true,tower:true});
+        // decorative columns (NO collision) so they never wall you — run/jump straight through
+        platforms.push({x:x1,y:topY,w:colW,h:bodyH,tower:true});
+        platforms.push({x:x2,y:topY,w:colW,h:bodyH,tower:true});
         const sbY = topY + bodyH*0.40;                       // skybridge deck
         platforms.push({x:x1+colW,y:sbY,w:gap,h:16,brick:true,skybridge:true});
         for (const hh of [80,160,240]) if (GROUND_TOP-hh > sbY+24) platforms.push({x:midX-26,y:GROUND_TOP-hh,w:52,h:14,brick:true});
@@ -628,10 +635,11 @@ function update(){
   // level progression — enter the KUSH CASTLE, each level crazier than the last
   const lv = Math.floor(distance/LEVEL_LEN);
   if (lv>level){
-    level=lv; levelFlash=70; castleT=160; sfx.level(); Music.setTheme(level);
-    addBanner("🏰 KUSH CASTLE — LEVEL "+(level+1), curTheme().name+"  ·  it gets crazier...", curTheme().accent, 180);
-    for(let i=0;i<44;i++) particles.push({x:player.x+rnd(-40,300),y:player.y+rnd(-160,20),vx:rnd(-5,5),vy:rnd(-9,-1),life:irnd(30,62),max:62,r:rnd(2,6),col:`hsl(${irnd(0,360)} 90% 62%)`,kind:"spark"});
-    screenShakeAdd(11);
+    level=lv; levelFlash=30; castleT=0; sfx.level(); Music.setTheme(level);
+    hitTimer=Math.max(hitTimer,55);   // brief grace — the castle transition is never a death
+    addBanner("🏰 LEVEL "+(level+1)+" — "+curTheme().name, "keep running, it gets crazier!", curTheme().accent, 95);
+    for(let i=0;i<40;i++) particles.push({x:player.x+rnd(-40,300),y:player.y+rnd(-160,20),vx:rnd(-5,5),vy:rnd(-9,-1),life:irnd(28,56),max:56,r:rnd(2,6),col:`hsl(${irnd(0,360)} 90% 62%)`,kind:"spark"});
+    screenShakeAdd(9);
   }
 
   if (speedTimer>0) speedTimer--;
@@ -667,8 +675,10 @@ function update(){
       if (frameCount%3===0) particles.push({x:player.x+(player.facing>0?0:player.w),y:player.y+player.h*0.55,vx:rnd(-1,1),vy:rnd(0,1.2),life:18,max:18,r:rnd(2,4),col:"rgba(210,240,255,.85)",kind:"smoke"}); }
     player.vy = Math.min(player.vy + GRAVITY*0.32, 7);
   } else {
-    if (!down("jump") && player.vy<-JUMP_CUT) player.vy=-JUMP_CUT;
+    // jump-cut for normal jumps only — NEVER cut a trampoline launch (let it fling you sky-high)
+    if (!player.trampHold && !down("jump") && player.vy<-JUMP_CUT) player.vy=-JUMP_CUT;
     player.vy=Math.min(player.vy+GRAVITY,MAX_FALL);
+    if (player.vy>=0) player.trampHold=false;   // clear at the apex
   }
 
   // fire joints
@@ -743,8 +753,8 @@ function resolveY(prevFeet){
       player.y+player.h>=p.y && player.y+player.h<=p.y+thick;
     if (landing){
       if (p.tramp){
-        player.y=p.y-player.h; player.vy=-TRAMP_BOUNCE; p.squish=12;
-        player.stretch=1.3; sfx.bounce(); puff(p.x+p.w/2,p.y,10,"#ffe27a"); player.buffer=0;
+        player.y=p.y-player.h; player.vy=-TRAMP_BOUNCE; p.squish=12; player.trampHold=true;
+        player.stretch=1.4; sfx.bounce(); puff(p.x+p.w/2,p.y,14,"#ffe27a"); player.buffer=0; screenShakeAdd(4);
       } else {
         player.y=p.y-player.h; player.vy=0; player.onGround=true; player.coyote=COYOTE;
         if (player.stretch>1.06){ player.squash=8; }
@@ -989,7 +999,6 @@ function render(){
   if (G.scene==="play"||G.scene==="paused") drawInsanity();
   drawHUD();
   drawBanners();
-  if (castleT>0) drawCastleEntry();
   if (levelFlash>0){ ctx.fillStyle=`rgba(255,255,255,${levelFlash/120})`; ctx.fillRect(0,0,VW,VH); }
   if (flash>0){ ctx.fillStyle=`rgba(255,255,255,${flash/30})`; ctx.fillRect(0,0,VW,VH); }
   drawVignette(th);
@@ -1139,6 +1148,7 @@ function drawPlatforms(th){
   for(const p of platforms){
     if (p.x+p.w<cam.x-60 || p.x>cam.x+VW+60) continue;
     if (p.ground) drawGround(p,th);
+    else if (p.castleGate) drawCastleGate(p);
     else if (p.tower) drawTowerColumn(p,th);
     else if (p.skybridge) drawSkybridge(p);
     else if (p.tramp) drawTramp(p);
@@ -1672,6 +1682,8 @@ function drawKushCastle(cx, baseY){
   ctx.textAlign="left"; ctx.textBaseline="alphabetic";
   ctx.restore();
 }
+// in-world castle gate (drawn in the world; player/enemies render on top, so nothing is hidden)
+function drawCastleGate(p){ drawKushCastle(p.x+p.w/2, GROUND_TOP); }
 function drawCastleEntry(){
   const p=clamp(castleT/160,0,1);
   const appear=clamp((160-castleT)/40,0,1);
