@@ -135,7 +135,7 @@ const BOARD = {
   provider: "pantry",                // GLOBAL leaderboard, shared by everyone with the link
   pantryId: "1ac0a8d5-7776-42ae-8f87-c375c3d33c30",
   basket:   "maria_trex_scores",
-  max:      25,
+  max:      100,
 };
 const Board = {
   cache: [], status: "local", lastName: "",
@@ -187,8 +187,12 @@ const Board = {
       let remote=[];
       try{ const r=await fetch(this.url(),{cache:"no-store"}); if(r.ok){ const d=await r.json(); remote=Array.isArray(d)?d:(d&&d.scores)||[]; } }catch(e){}
       const merged=this.normalize(remote.concat(local));
-      await fetch(this.url(),{ method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({scores:merged}) });
-      this.cache=merged; this.status="online";
+      // write with one retry so a flaky network doesn't drop the score
+      let ok=false;
+      for (let a=0; a<2 && !ok; a++){
+        try{ const w=await fetch(this.url(),{ method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({scores:merged}) }); ok=w.ok; }catch(e){}
+      }
+      this.cache=merged; this.status= ok?"online":"offline";
     }catch(e){ this.status="offline"; }
   },
 };
@@ -265,10 +269,34 @@ function goFullscreen(){
   const el=document.documentElement;
   const fn=el.requestFullscreen||el.webkitRequestFullscreen||el.webkitRequestFullScreen||el.mozRequestFullScreen;
   if (fn){ try{ const r=fn.call(el); if(r&&r.catch) r.catch(()=>{}); }catch(e){} }
-  if (screen.orientation && screen.orientation.lock){ try{ screen.orientation.lock("landscape").catch(()=>{}); }catch(e){} }
+  // NOTE: no orientation lock — plays the same upright (portrait) or sideways (landscape)
 }
 addEventListener("pointerdown", goFullscreen, {passive:true});
 addEventListener("touchend", ()=>{ window.scrollTo(0,1); }, {passive:true});  // nudge iOS Safari bar away
+
+// ===== TAP ANYWHERE = JUMP (during play) — big forgiving target; the jump button stays visible =====
+let jumpTouchId=null;
+function isControlTarget(t){ return !!(t && t.closest && t.closest(".btn")); }   // left/right/fire/jump pads
+function onScreenButton(e){ const p=ptr(e); for(const b of uiButtons){ if(p.x>=b.x&&p.x<=b.x+b.w&&p.y>=b.y&&p.y<=b.y+b.h) return true; } return false; }
+function jumpPress(e){
+  if (G.scene!=="play") return;                 // menus are handled by the canvas handler
+  if (isControlTarget(e.target)) return;        // steering/fire/jump pads do their own thing
+  if (onScreenButton(e)) return;                // the on-canvas ≡ MENU button
+  Music.start();
+  keys.jump=true;
+  jumpTouchId = (e.changedTouches && e.changedTouches.length) ? e.changedTouches[0].identifier : "mouse";
+  if (e.cancelable) e.preventDefault();
+}
+function jumpRelease(e){
+  if (jumpTouchId===null) return;
+  if (e.changedTouches){ for(const t of e.changedTouches){ if(t.identifier===jumpTouchId){ keys.jump=false; jumpTouchId=null; return; } } }
+  else { keys.jump=false; jumpTouchId=null; }    // mouseup
+}
+addEventListener("touchstart", jumpPress, {passive:false});
+addEventListener("mousedown", jumpPress);
+addEventListener("touchend", jumpRelease, {passive:true});
+addEventListener("touchcancel", jumpRelease, {passive:true});
+addEventListener("mouseup", jumpRelease);
 
 function onConfirm(){
   if (G.scene==="intro"){ G.scene="title"; Board.refresh(); return; }
@@ -419,6 +447,7 @@ function resetWorld(forDemo){
 
 function startGame(){
   resetWorld(false);
+  keys.jump=false; jumpTouchId=null;   // no stale held-jump from a menu tap
   G.scene="play"; G.paused=false;
   if (ac() && actx.state==="suspended") actx.resume();
   Music.setTheme(0); Music.start();
@@ -2064,7 +2093,7 @@ function loop(now){
     accT-=FIXED_DT;
   }
   // keep the global board fresh on menus so new high scores show up for everyone
-  if (G.scene!=="play" && Board.global() && frameCount%420===0) Board.refresh();
+  if (G.scene!=="play" && Board.global() && frameCount%240===0) Board.refresh();
   render();
   requestAnimationFrame(loop);
 }
