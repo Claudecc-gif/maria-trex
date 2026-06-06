@@ -452,6 +452,7 @@ function setKey(k,v){
     if (k==="s" && (G.scene==="title")) openShop();
     if (k==="escape" && G.scene==="shop") G.scene="title";
     if (k==="escape" && G.scene==="howto") leaveHowto();
+    if (k==="escape" && G.scene==="guide") closeGuide();
     if (k==="escape" && (G.scene==="play"||G.scene==="paused")) quitToMenu();
   }
 }
@@ -516,6 +517,20 @@ addEventListener("pointermove", e=>{ if(boardDrag){ boardScroll=clamp(boardDrag.
 addEventListener("pointerup",     ()=>{ boardDrag=null; }, {passive:true});
 addEventListener("pointercancel", ()=>{ boardDrag=null; }, {passive:true});
 addEventListener("wheel", e=>{ if(overBoard(e.clientX,e.clientY)){ boardScroll=clamp(boardScroll+e.deltaY*0.5, 0, boardScrollMax); e.preventDefault(); } }, {passive:false});
+
+// ===== HOW-TO-PLAY guide scroll: drag or wheel inside the instructions box =====
+let guideScroll=0, guideScrollMax=0, guideRect=null, guideDrag=null;
+function overGuide(clientX, clientY){
+  if (G.scene!=="guide" || !guideRect || guideScrollMax<=0) return false;
+  const r=canvas.getBoundingClientRect();
+  const x=(clientX-r.left)*(VW/r.width), y=(clientY-r.top)*(VH/r.height);
+  return x>=guideRect.x && x<=guideRect.x+guideRect.w && y>=guideRect.y && y<=guideRect.y+guideRect.h;
+}
+addEventListener("pointerdown", e=>{ if(overGuide(e.clientX,e.clientY)){ const r=canvas.getBoundingClientRect(); guideDrag={ y:e.clientY, s0:guideScroll, scale:r.height?(VH/r.height):1 }; } }, {passive:true});
+addEventListener("pointermove", e=>{ if(guideDrag){ guideScroll=clamp(guideDrag.s0-(e.clientY-guideDrag.y)*guideDrag.scale, 0, guideScrollMax); } }, {passive:true});
+addEventListener("pointerup",     ()=>{ guideDrag=null; }, {passive:true});
+addEventListener("pointercancel", ()=>{ guideDrag=null; }, {passive:true});
+addEventListener("wheel", e=>{ if(overGuide(e.clientX,e.clientY)){ guideScroll=clamp(guideScroll+e.deltaY*0.5, 0, guideScrollMax); e.preventDefault(); } }, {passive:false});
 
 // ===== touch controls: floating JOYSTICK (left side) to steer, JUMP/SHOOT on the right =====
 // Mobile only. Touch down anywhere on the LEFT side of the screen and a joystick spawns under
@@ -606,6 +621,7 @@ addEventListener("mouseup", ()=>{ keys.jump=false; });
 function onConfirm(){
   if (G.scene==="intro"){ leaveIntro(); return; }
   if (G.scene==="howto"){ leaveHowto(); return; }
+  if (G.scene==="guide"){ closeGuide(); return; }
   if (G.scene==="title"||G.scene==="over") startGame();
   else if (G.scene==="shop") G.scene="title";
 }
@@ -1436,6 +1452,7 @@ function render(){
   if (G.scene!==_prevScene){ if(G.scene==="title"||G.scene==="over") boardScroll=0; boardRect=null; boardScrollMax=0; _prevScene=G.scene; }  // fresh scroll per board view
   if (G.scene==="intro") drawIntro();
   else if (G.scene==="howto") drawHowto();
+  else if (G.scene==="guide") drawGuide();
   else if (G.scene==="title") drawTitle();
   else if (G.scene==="shop") drawShop();
   else if (G.scene==="over") drawGameOver();
@@ -2372,6 +2389,136 @@ function markHowtoSeen(){ try{ localStorage.setItem("maria_howto_seen","1"); }ca
 // leaving the intro: first-ever boot drops into the HOW-TO screen, after that straight to the title
 function leaveIntro(){ if (howtoSeen()){ G.scene="title"; Board.refresh(); } else { G.scene="howto"; } }
 function leaveHowto(){ markHowtoSeen(); G.scene="title"; Board.refresh(); }
+
+// ===== HOW TO PLAY (game guide): cops, points & pick-ups — reachable from the title AND mid-run =====
+let guideFrom="title";   // where to return when the guide closes ("title" or "play")
+function openGuide(from){
+  guideFrom = (from==="play") ? "play" : "title";
+  guideScroll = 0;
+  touchCtl.clear(); stickId=null; hideJoy(); keys.jump=keys.left=keys.right=keys.fire=false;   // freeze any held input
+  G.scene="guide"; G.paused = (guideFrom==="play");   // world stops updating (loop only runs update() while scene==="play")
+}
+function closeGuide(){
+  guideScroll=0;
+  if (guideFrom==="play"){
+    touchCtl.clear(); stickId=null; hideJoy(); keys.jump=keys.left=keys.right=keys.fire=false;   // resume with no stale input
+    G.scene="play"; G.paused=false;
+  } else {
+    G.scene="title"; Board.refresh();
+  }
+}
+// MENU from inside the guide → fully QUIT the run (bank it first if we paused mid-game) and go to the main menu
+function guideToMenu(){
+  if (guideFrom==="play") bankAndSubmit();   // nothing lost; mirrors quitToMenu's banking
+  guideFrom="title"; guideScroll=0;
+  G.scene="title"; G.paused=false; Board.refresh();
+}
+
+const GUIDE_BLOCKS = [
+  { h:"🎯  THE GOAL", c:"#7CFC6A", body:[
+     "You're Kuala Lumpur's most-wanted Rex. Outrun the cops, grab kush 🌿, and run as far as you can — on three lives." ]},
+  { h:"🕹  CONTROLS", c:"#bfe6ff", body:[
+     "Phone: slide your LEFT thumb to steer · tap the RIGHT side to JUMP · 🚬 to shoot · ≡ for the menu.",
+     "Keyboard: ← → run · SPACE / ↑ jump · F shoot · P pause.",
+     "Bounce off trampolines to reach the rooftops, and stomp narcs from above." ]},
+  { h:"🚓  THE COPS — don't get caught!", c:"#ff7b7b", body:[
+     "A police line chases from behind and speeds up every level — but you can ALWAYS escape by running. A blaring siren means they're right on your tail.",
+     "💵 Caught with 100+ 🌿? You auto-BRIBE: pay 100 kush (one time only) and the cops fall back.",
+     "🌳 Caught with no bribe left? BUSTED — strung up from the weed tree, and you lose a life." ]},
+  { h:"⭐  PICK-UPS — grab everything!", c:"#ffd54a", body:[
+     "🌿 Kush leaf — +1 point. This is BOTH your score and your shop money.",
+     "💨 Bong — speed boost for about 7 seconds.",
+     "⭐ Cali Star — invincible for about 8 seconds: smash through enemies and shrug off hits.",
+     "🚬 Blow Cannon — +14 joints of ammo (carry up to 25). Press F / 🚬 to fire at narcs.",
+     "🪽 Kush Wings — fly for about 7 seconds: hold JUMP to soar.",
+     "…and there are secret hidden pick-ups that quietly boost your leaderboard rank." ]},
+  { h:"👮  NARCS & THE BOSS", c:"#ff9d6b", body:[
+     "Narcs patrol the streets and some will chase you. Touch one and you get hurt — so STOMP them from above or SHOOT them with joints.",
+     "The Narco Boss shoots back. Take it down for +1 LIFE and +10 🌿." ]},
+  { h:"❤️  LIVES — max 3", c:"#ff7bd0", body:[
+     "You start with 3. You lose one when the cops bust you, a narc or a bullet hits you, or you fall into a pit or lava. Beating the boss earns one back." ]},
+  { h:"🏆  POINTS & LEADERBOARD", c:"#9fe89f", body:[
+     "Your run total = 66% of your kush 🌿 + 33% of your distance (m) + secret hidden bonuses.",
+     "Kush is banked after every run — spend it in the 🛍 KUSH SHOP on Rex skins and the 🦅 Kush Eagle pet. The season leaderboard resets to keep things fair." ]},
+];
+
+function drawGuide(){
+  // backdrop (green night vibe, like the intro) + a soft dim so the frozen world never bleeds through
+  const g=ctx.createLinearGradient(0,0,0,VH); g.addColorStop(0,"#0a2114"); g.addColorStop(.6,"#06120b"); g.addColorStop(1,"#030704");
+  ctx.fillStyle=g; ctx.fillRect(0,0,VW,VH);
+  ctx.fillStyle="rgba(6,10,20,.5)"; ctx.fillRect(0,0,VW,VH);
+  ctx.textBaseline="alphabetic";
+
+  const pad=16, w=Math.min(620, VW-2*pad), x0=(VW-w)/2, cx=VW/2, inner=w-2*pad;
+  panel(x0, 10, w, VH-20);
+
+  // header
+  ctx.textAlign="center";
+  ctx.fillStyle="#7CFC6A"; ctx.font="bold "+fitFontSize("📖  HOW TO PLAY",24,inner,"bold")+"px 'Trebuchet MS'";
+  ctx.fillText("📖  HOW TO PLAY", cx, 44);
+
+  // ---- bottom button band (fixed; never scrolls) ----
+  const fromPlay = (guideFrom==="play");
+  const btnH=44, gap2=10, stack = fromPlay && inner<340;
+  const rows = stack?2:1, bandH = rows*btnH + (rows-1)*gap2;
+  const bandTop = VH-10-12-bandH;
+
+  // ---- scrollable content region between the header and the buttons ----
+  const top=58, bot=bandTop-12;
+  const rect={ x:x0+pad, y:top, w:inner, h:Math.max(24, bot-top) };
+  guideRect=rect;
+  const bodyPx=(inner<430)?12:13;
+  const bodyFont=bodyPx+"px 'Trebuchet MS'";
+  // wrap conservatively: measureText under-counts emoji width, so leave a right gutter to avoid clipping
+  const headH=22, lineH=bodyPx+5, blockGap=12, bodyX=rect.x+6, bodyW=rect.w-20;
+
+  // measure total content height
+  const wrapped = GUIDE_BLOCKS.map(b=> b.body.map(t=>wrapLines(t, bodyFont, bodyW)));
+  let contentH=0;
+  for (let i=0;i<GUIDE_BLOCKS.length;i++){ contentH+=headH; for(const ls of wrapped[i]) contentH+=ls.length*lineH; contentH+=blockGap; }
+  guideScrollMax=Math.max(0, contentH-rect.h);
+  guideScroll=clamp(guideScroll,0,guideScrollMax);
+
+  // draw, clipped to the box and offset by the scroll position
+  ctx.save();
+  ctx.beginPath(); ctx.rect(rect.x-8, rect.y-4, rect.w+16, rect.h+8); ctx.clip();
+  let y=rect.y+4-guideScroll;
+  for (let i=0;i<GUIDE_BLOCKS.length;i++){
+    const b=GUIDE_BLOCKS[i];
+    ctx.textAlign="left"; ctx.fillStyle=b.c;
+    ctx.font="bold "+fitFontSize(b.h,15,rect.w-4,"bold")+"px 'Trebuchet MS'"; ctx.fillText(b.h, rect.x, y+12);
+    y+=headH;
+    ctx.font=bodyFont; ctx.fillStyle="#cfd8e8";
+    for (const ls of wrapped[i]){ for (const ln of ls){ ctx.fillText(ln, bodyX, y+11); y+=lineH; } }
+    y+=blockGap;
+  }
+  ctx.restore();
+
+  // slim scrollbar + a bottom fade hinting there's more to read
+  if (guideScrollMax>0){
+    const trackX=rect.x+rect.w+2, frac=rect.h/contentH, thumbH=Math.max(20,rect.h*frac), thumbY=rect.y+(guideScroll/guideScrollMax)*(rect.h-thumbH);
+    ctx.fillStyle="rgba(255,255,255,.10)"; roundRect(trackX,rect.y,3,rect.h,1.5); ctx.fill();
+    ctx.fillStyle="rgba(124,252,106,.6)";  roundRect(trackX,thumbY,3,thumbH,1.5); ctx.fill();
+    if (guideScroll < guideScrollMax-1){
+      const fg=ctx.createLinearGradient(0,rect.y+rect.h-22,0,rect.y+rect.h); fg.addColorStop(0,"rgba(8,18,11,0)"); fg.addColorStop(1,"rgba(8,18,11,.92)");
+      ctx.fillStyle=fg; ctx.fillRect(rect.x-8, rect.y+rect.h-22, rect.w+16, 22);
+    }
+  }
+
+  // ---- buttons (fixed band) ----
+  ctx.textAlign="left";
+  if (!fromPlay){
+    const bw=Math.min(320,inner), bx=cx-bw/2;
+    button(bx, bandTop, bw, btnH, "GOT IT  🌿", ()=>closeGuide());
+  } else if (stack){
+    button(x0+pad, bandTop, inner, btnH, "▶  RESUME", ()=>closeGuide());
+    button(x0+pad, bandTop+btnH+gap2, inner, btnH, "≡  MAIN MENU", ()=>guideToMenu(), "rgba(255,255,255,.14)");
+  } else {
+    const bw=(inner-gap2)/2;
+    button(x0+pad, bandTop, bw, btnH, "▶  RESUME", ()=>closeGuide());
+    button(x0+pad+bw+gap2, bandTop, bw, btnH, "≡  MAIN MENU", ()=>guideToMenu(), "rgba(255,255,255,.14)");
+  }
+}
 // word-wrap a string to fit maxW at the given font; hard-breaks a single word too wide for the column
 function wrapLines(text, font, maxW){
   ctx.font=font; maxW=Math.max(1,maxW);
@@ -2521,10 +2668,11 @@ function drawTitle(){
     ctx.fillStyle=nameCol; ctx.font="bold 14px 'Trebuchet MS'"; ctx.textAlign="center"; ctx.fillText(empty?"ENTER YOUR NAME ↓":"YOUR NAME", Lcx, 198);
     const sk=curSkin(); ctx.fillStyle="#9fb4d6"; ctx.font="12px 'Trebuchet MS'"; ctx.fillText("Skin: "+sk.name+" · Best: "+DB.best+"🌿", Lcx, 300);
     ctx.textAlign="left";
-    button(Lx, 320, colW, 50, "▶  PLAY", ()=>startGame());
-    button(Lx, 380, colW, 40, "🛍  KUSH SHOP", ()=>openShop(), "rgba(255,213,74,.18)");
-    ctx.textAlign="center"; ctx.fillStyle="#8298ba"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText("← → run · SPACE jump · F shoot", Lcx, 440);
-    linkText("ℹ️  How to play fullscreen", Lcx, 470, ()=>{ G.scene="howto"; });
+    button(Lx, 318, colW, 48, "▶  PLAY", ()=>startGame());
+    button(Lx, 372, colW, 38, "🛍  KUSH SHOP", ()=>openShop(), "rgba(255,213,74,.18)");
+    button(Lx, 416, colW, 38, "📖  HOW TO PLAY", ()=>openGuide("title"), "rgba(88,166,255,.18)");
+    ctx.textAlign="center"; ctx.fillStyle="#8298ba"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText("← → run · SPACE jump · F shoot", Lcx, 470);
+    linkText("ℹ️  How to play fullscreen", Lcx, 494, ()=>{ G.scene="howto"; });
     ctx.fillStyle="#ffd54a"; ctx.font="bold 18px 'Trebuchet MS'"; ctx.fillText("🏆 HIGH SCORES", Rcx, 192);
     ctx.fillStyle="#8fa6c8"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText(Board.statusLine(), Rcx, 207);
     ctx.fillStyle="#9fe89f"; ctx.font="bold 11px 'Trebuchet MS'"; ctx.fillText("🎮 "+fmtInt(Stats.display())+" runs played worldwide", Rcx, 220);
@@ -2532,14 +2680,15 @@ function drawTitle(){
     drawBoard(Rx+8, 246, colW-16, (VH-42)-246, 20, null);
   } else {
     const ix=x0+pad, iw=w-2*pad;
-    ctx.fillStyle=nameCol; ctx.font="bold 13px 'Trebuchet MS'"; ctx.textAlign="center"; ctx.fillText(empty?"ENTER YOUR NAME ↓":"YOUR NAME", cx, 166);
+    ctx.fillStyle=nameCol; ctx.font="bold 13px 'Trebuchet MS'"; ctx.textAlign="center"; ctx.fillText(empty?"ENTER YOUR NAME ↓":"YOUR NAME", cx, 160);
     ctx.textAlign="left";
-    button(ix, 228, iw, 44, "▶  PLAY", ()=>startGame());
-    button(ix, 278, iw, 38, "🛍  KUSH SHOP", ()=>openShop(), "rgba(255,213,74,.18)");
-    ctx.textAlign="center"; ctx.fillStyle="#ffd54a"; ctx.font="bold 15px 'Trebuchet MS'"; ctx.fillText("🏆 HIGH SCORES", cx, 338);
-    ctx.fillStyle="#8fa6c8"; ctx.font="10px 'Trebuchet MS'"; ctx.fillText(Board.statusLine()+" · 🎮 "+fmtInt(Stats.display())+" runs", cx, 353);
-    ctx.fillStyle="#7CFC6A"; ctx.font="bold 10px 'Trebuchet MS'"; ctx.fillText("⏳ season resets in "+fmtCountdown(seasonEndMs()), cx, 367);
-    drawBoard(ix+4, 376, iw-8, 114, 20, null);
+    button(ix, 226, iw, 42, "▶  PLAY", ()=>startGame());
+    button(ix, 272, iw, 36, "🛍  KUSH SHOP", ()=>openShop(), "rgba(255,213,74,.18)");
+    button(ix, 312, iw, 36, "📖  HOW TO PLAY", ()=>openGuide("title"), "rgba(88,166,255,.18)");
+    ctx.textAlign="center"; ctx.fillStyle="#ffd54a"; ctx.font="bold 15px 'Trebuchet MS'"; ctx.fillText("🏆 HIGH SCORES", cx, 368);
+    ctx.fillStyle="#8fa6c8"; ctx.font="10px 'Trebuchet MS'"; ctx.fillText(Board.statusLine()+" · 🎮 "+fmtInt(Stats.display())+" runs", cx, 381);
+    ctx.fillStyle="#7CFC6A"; ctx.font="bold 10px 'Trebuchet MS'"; ctx.fillText("⏳ season resets in "+fmtCountdown(seasonEndMs()), cx, 393);
+    drawBoard(ix+4, 400, iw-8, 94, 20, null);
     linkText("ℹ️  How to play fullscreen", cx, 508, ()=>{ G.scene="howto"; });
   }
   ctx.fillStyle="#fff"; ctx.globalAlpha=0.6+0.4*Math.sin(frameCount*0.12); ctx.font="bold 14px 'Trebuchet MS'"; ctx.textAlign="center";
@@ -2668,8 +2817,15 @@ function drawGameOver(){
 }
 // small in-game button (top, clear of the controls) → back to the main menu
 function drawMenuButton(){
-  if (VW<720){ drawSoundButton(VW-98, 14+safeTop, 34, 22); button(VW-58, 14+safeTop, 50, 22, "≡", quitToMenu, "rgba(8,12,24,.66)"); }
-  else { drawSoundButton(VW/2+34, 8, 38, 28); button(VW/2+76, 8, 104, 28, "≡ MENU", quitToMenu, "rgba(8,12,24,.62)"); }  // left of MENU, clear of the top-right police panel
+  if (VW<720){
+    button(VW-108, 14+safeTop, 30, 22, "📖", ()=>openGuide("play"), "rgba(8,12,24,.66)");   // how-to-play (pauses the run); right of the lives icons
+    drawSoundButton(VW-74, 14+safeTop, 30, 22);
+    button(VW-40, 14+safeTop, 34, 22, "≡", quitToMenu, "rgba(8,12,24,.66)");
+  } else {
+    button(VW/2-12, 8, 42, 28, "📖", ()=>openGuide("play"), "rgba(8,12,24,.62)");            // how-to-play (pauses the run)
+    drawSoundButton(VW/2+34, 8, 38, 28);
+    button(VW/2+76, 8, 104, 28, "≡ MENU", quitToMenu, "rgba(8,12,24,.62)");                  // left of MENU, clear of the top-right police panel
+  }
 }
 function drawPaused(){
   ctx.fillStyle="rgba(6,10,20,.62)"; ctx.fillRect(0,0,VW,VH);
