@@ -262,7 +262,7 @@ const Board = {
       if(res.ok){ payload=this.unwrap(await res.json()); }
       this.cache=this.normalize(payload.scores.concat(this.localCurrent()));
       this.status="online";
-    }catch(e){ this.status="offline"; this.cache=this.normalize(this.localCurrent()); }
+    }catch(e){ this.status="offline"; this.cache=this.normalize(this.cache.concat(this.localCurrent())); }  // network failed: KEEP the last-good board, never downgrade to local-only
   },
   same(a,b){ if(a.length!==b.length) return false; for(let i=0;i<a.length;i++){ const x=a[i],y=b[i]; if(x.name!==y.name||x.score!==y.score||x.dist!==y.dist||(x.hidden||0)!==(y.hidden||0)) return false; } return true; },
   async readRemote(){ try{ const r=await fetch(this.url(),{cache:"no-store"}); if(r.ok){ const d=await r.json(); return this.unwrap(d); } }catch(e){} return null; },
@@ -272,7 +272,8 @@ const Board = {
     let local=this.localAll(); local.push(entry);
     local=local.filter(e=> (Number(e.season)||0) >= cur);             // drop last-season locals
     this.localSet(local);                                             // instant + offline-proof
-    this.cache=this.normalize(local);
+    // keep everyone else's already-loaded scores so the game-over board isn't reduced to just THIS device
+    this.cache=this.normalize(this.cache.concat(local));
     this.lastName=entry.name;
     if (!this.global()) return;
     this.status="loading";
@@ -290,10 +291,41 @@ const Board = {
         try{ const w=await fetch(this.url(),{ method:"POST", headers:{"Content-Type":"application/json"},
               body:JSON.stringify({scores:merged, season:writeSeason}) }); ok=ok||w.ok; }catch(e){}
       }
-      this.cache=merged; this.status= ok?"online":"offline";
+      // merge, don't REPLACE: if the remote read failed, `merged` is local-only — keep the full board too
+      this.cache=this.normalize(this.cache.concat(merged)); this.status= ok?"online":"offline";
     }catch(e){ this.status="offline"; }
   },
 };
+
+// ---------------- global "games played" counter (all-time, survives season resets) ----------------
+// Lives in its OWN Pantry basket so the 3-day score wipe never touches it. Best-effort: a read-
+// modify-write bump per finished run; concurrent finishes may rarely drop a count (fine for a vanity stat).
+const STATS = { pantryId: BOARD.pantryId, basket: "maria_trex_stats" };
+const Stats = {
+  plays: -1,                                                       // global all-time count, -1 = not yet known
+  global(){ return STATS.pantryId && STATS.pantryId.length>10; },
+  url(){ return "https://getpantry.cloud/apiv1/pantry/"+STATS.pantryId+"/basket/"+STATS.basket; },
+  localPlays(){ try{ return Number(localStorage.getItem("maria_plays_local")||0)||0; }catch(e){ return 0; } },
+  bumpLocal(){ try{ localStorage.setItem("maria_plays_local", String(this.localPlays()+1)); }catch(e){} },
+  display(){ return this.plays>=0 ? this.plays : this.localPlays(); },   // global if synced, else the local tally
+  async fetch(){
+    if (!this.global()) return;
+    try{ const r=await fetch(this.url(),{cache:"no-store"}); if(r.ok){ const d=await r.json(); this.plays=Math.max(0,Math.floor(Number(d&&d.plays)||0)); } }catch(e){}
+  },
+  async bump(){
+    this.bumpLocal();                                              // always count locally (offline-proof)
+    if (!this.global()) return;
+    try{
+      let cur=0;
+      try{ const r=await fetch(this.url(),{cache:"no-store"}); if(r.ok){ const d=await r.json(); cur=Math.max(0,Math.floor(Number(d&&d.plays)||0)); } }catch(e){}
+      const next=Math.max(cur, this.plays<0?0:this.plays)+1;
+      const w=await fetch(this.url(),{ method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({plays:next}) });
+      if (w.ok) this.plays=next;
+    }catch(e){}
+  },
+};
+// 12345 -> "12,345"
+function fmtInt(n){ return String(Math.max(0,Math.floor(n||0))).replace(/\B(?=(\d{3})+(?!\d))/g,","); }
 
 // ---------------- per-name account sync (Pantry profiles basket) ----------------
 // Every player NAME owns a cloud profile {bank,owned,skin,pet,best,bestDist}. Loading a name
@@ -419,6 +451,7 @@ function setKey(k,v){
     if (k==="enter") onConfirm();
     if (k==="s" && (G.scene==="title")) openShop();
     if (k==="escape" && G.scene==="shop") G.scene="title";
+    if (k==="escape" && G.scene==="howto") leaveHowto();
     if (k==="escape" && (G.scene==="play"||G.scene==="paused")) quitToMenu();
   }
 }
@@ -443,12 +476,16 @@ let uiButtons=[];
 function handleClick(e){
   e.preventDefault();
   Music.start();   // any tap is a user gesture → music can begin
-  if (G.scene==="intro"){ G.scene="title"; Board.refresh(); return; }
+  if (G.scene==="intro"){ leaveIntro(); return; }
   const p=ptr(e);
   for (const b of uiButtons){
     if (p.x>=b.x && p.x<=b.x+b.w && p.y>=b.y && p.y<=b.y+b.h){ b.action(); return; }
   }
-  if (G.scene==="title"||G.scene==="over") startGame();
+  if (G.scene==="title"||G.scene==="over"){
+    // a press inside a SCROLLABLE high-score box is a scroll gesture, not "start / run again"
+    if (boardRect && boardScrollMax>0 && p.x>=boardRect.x && p.x<=boardRect.x+boardRect.w && p.y>=boardRect.y && p.y<=boardRect.y+boardRect.h) return;
+    startGame();
+  }
 }
 canvas.addEventListener("mousedown", handleClick);
 canvas.addEventListener("touchstart", handleClick, {passive:false});
@@ -464,6 +501,21 @@ function goFullscreen(){
 }
 addEventListener("pointerdown", goFullscreen, {passive:true});
 addEventListener("touchend", ()=>{ window.scrollTo(0,1); }, {passive:true});  // nudge iOS Safari bar away
+
+// ===== leaderboard scroll: drag or mouse-wheel inside the high-score box (title + game over) =====
+let boardDrag=null;
+function overBoard(clientX, clientY){
+  if (!boardRect || boardScrollMax<=0) return false;
+  if (G.scene!=="title" && G.scene!=="over") return false;
+  const r=canvas.getBoundingClientRect();
+  const x=(clientX-r.left)*(VW/r.width), y=(clientY-r.top)*(VH/r.height);
+  return x>=boardRect.x && x<=boardRect.x+boardRect.w && y>=boardRect.y && y<=boardRect.y+boardRect.h;
+}
+addEventListener("pointerdown", e=>{ if(overBoard(e.clientX,e.clientY)){ const r=canvas.getBoundingClientRect(); boardDrag={ y:e.clientY, s0:boardScroll, scale:r.height?(VH/r.height):1 }; } }, {passive:true});
+addEventListener("pointermove", e=>{ if(boardDrag){ boardScroll=clamp(boardDrag.s0-(e.clientY-boardDrag.y)*boardDrag.scale, 0, boardScrollMax); } }, {passive:true});
+addEventListener("pointerup",     ()=>{ boardDrag=null; }, {passive:true});
+addEventListener("pointercancel", ()=>{ boardDrag=null; }, {passive:true});
+addEventListener("wheel", e=>{ if(overBoard(e.clientX,e.clientY)){ boardScroll=clamp(boardScroll+e.deltaY*0.5, 0, boardScrollMax); e.preventDefault(); } }, {passive:false});
 
 // ===== touch controls: floating JOYSTICK (left side) to steer, JUMP/SHOOT on the right =====
 // Mobile only. Touch down anywhere on the LEFT side of the screen and a joystick spawns under
@@ -552,7 +604,8 @@ addEventListener("mousedown", mouseJump);
 addEventListener("mouseup", ()=>{ keys.jump=false; });
 
 function onConfirm(){
-  if (G.scene==="intro"){ G.scene="title"; Board.refresh(); return; }
+  if (G.scene==="intro"){ leaveIntro(); return; }
+  if (G.scene==="howto"){ leaveHowto(); return; }
   if (G.scene==="title"||G.scene==="over") startGame();
   else if (G.scene==="shop") G.scene="title";
 }
@@ -589,7 +642,8 @@ function syncNameInput(){
 }
 
 // ---------------- audio ----------------
-let actx=null, muted=false;
+let actx=null;
+let muted=(function(){ try{ return localStorage.getItem("maria_muted")==="1"; }catch(e){ return false; } })();   // remembered across sessions
 function ac(){ if(!actx){ try{ actx=new (window.AudioContext||window.webkitAudioContext)(); }catch(e){ actx=null; } } return actx; }
 function tone(freq, dur=0.08, type="square", vol=0.12, slideTo=null, delay=0){
   if (muted) return; const a=ac(); if(!a) return;
@@ -669,6 +723,8 @@ const Music = {
   },
 };
 function toggleMusic(){ Music.on=!Music.on; }
+// master mute — silences SFX *and* music (Music.sched checks !muted); remembered across sessions
+function toggleMute(){ muted=!muted; try{ localStorage.setItem("maria_muted", muted?"1":"0"); }catch(e){} if(!muted){ Music.start(); } }
 
 // ---------------- utils ----------------
 const rnd=(a,b)=>a+Math.random()*(b-a);
@@ -1311,6 +1367,7 @@ function bankAndSubmit(){
   const nm = Profile.key(DB.name) || "PLAYER";
   Board.submit({ name:nm, score:Math.floor(score), dist:Math.floor(distance), hidden:Math.floor(hidden), ts:Date.now() });
   Profile.save();                        // push bank/best/bestDist (+owned/skin/pet) to the cloud account
+  Stats.bump();                          // +1 to the global all-time "games played" counter
 }
 function gameOver(){ G.scene="over"; bankAndSubmit(); }
 // in-game "back to menu": bank + submit the run (nothing lost), then to the title
@@ -1376,7 +1433,9 @@ function render(){
   ctx.restore();
 
   uiButtons=[];
+  if (G.scene!==_prevScene){ if(G.scene==="title"||G.scene==="over") boardScroll=0; boardRect=null; boardScrollMax=0; _prevScene=G.scene; }  // fresh scroll per board view
   if (G.scene==="intro") drawIntro();
+  else if (G.scene==="howto") drawHowto();
   else if (G.scene==="title") drawTitle();
   else if (G.scene==="shop") drawShop();
   else if (G.scene==="over") drawGameOver();
@@ -2299,32 +2358,151 @@ function drawIntro(){
     ctx.fillStyle="#cfe0ff"; ctx.font="bold 18px 'Trebuchet MS'"; ctx.fillText("KUALA LUMPUR · MOST WANTED", VW/2, VH/2+118); ctx.globalAlpha=1; }
   if (introT>78){ ctx.globalAlpha=0.55+0.45*Math.sin(introT*0.16); ctx.textAlign="center";
     ctx.fillStyle="#fff"; ctx.font="bold 16px 'Trebuchet MS'"; ctx.fillText("tap / press ENTER", VW/2, VH-46); ctx.globalAlpha=1; ctx.textAlign="left"; }
-  if (introT>250) G.scene="title";
+  if (introT>250) leaveIntro();
 }
 
-// shared high-score list renderer (title + game over)
-function drawBoardRows(x, y, w, count, hiName){
-  const rows = Board.cache.slice(0, count);
+// ===== first-launch onboarding: how to get TRUE fullscreen + best rotation =====
+const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform==="MacIntel" && navigator.maxTouchPoints>1);
+function isStandalone(){
+  return (navigator.standalone===true) ||
+    (typeof matchMedia==="function" && (matchMedia("(display-mode: standalone)").matches || matchMedia("(display-mode: fullscreen)").matches));
+}
+function howtoSeen(){ try{ return !!localStorage.getItem("maria_howto_seen"); }catch(e){ return false; } }
+function markHowtoSeen(){ try{ localStorage.setItem("maria_howto_seen","1"); }catch(e){} }
+// leaving the intro: first-ever boot drops into the HOW-TO screen, after that straight to the title
+function leaveIntro(){ if (howtoSeen()){ G.scene="title"; Board.refresh(); } else { G.scene="howto"; } }
+function leaveHowto(){ markHowtoSeen(); G.scene="title"; Board.refresh(); }
+// word-wrap a string to fit maxW at the given font; hard-breaks a single word too wide for the column
+function wrapLines(text, font, maxW){
+  ctx.font=font; maxW=Math.max(1,maxW);
+  const words=String(text).split(" "), lines=[]; let line="";
+  const flush=()=>{ if(line){ lines.push(line); line=""; } };
+  for (let wd of words){
+    while (wd.length>1 && ctx.measureText(wd).width>maxW){            // word alone overflows → break by chars
+      let i=1; while (i<wd.length && ctx.measureText(wd.slice(0,i+1)).width<=maxW) i++;
+      flush(); lines.push(wd.slice(0,i)); wd=wd.slice(i);
+    }
+    const test=line?line+" "+wd:wd;
+    if (line && ctx.measureText(test).width>maxW){ flush(); line=wd; }
+    else line=test;
+  }
+  flush();
+  return lines;
+}
+// tappable text "link" — draws the label and registers a uiButton hotspot around it
+function linkText(label, cx, y, action, color){
+  ctx.font="bold 12px 'Trebuchet MS'"; ctx.textAlign="center"; ctx.fillStyle=color||"#7CFC6A"; ctx.fillText(label, cx, y);
+  const tw=ctx.measureText(label).width; uiButtons.push({x:cx-tw/2-10, y:y-16, w:tw+20, h:22, action});
+  ctx.textAlign="left";
+}
+// largest font size (≤ basePx) at which `text` fits within maxW, in the given weight
+function fitFontSize(text, basePx, maxW, weight){
+  if (!(maxW>0)) return Math.max(9, basePx);
+  ctx.font=(weight?weight+" ":"")+basePx+"px 'Trebuchet MS'";
+  const wpx=ctx.measureText(text).width;
+  return (wpx>maxW && wpx>0) ? Math.max(9, Math.floor(basePx*maxW/wpx)) : basePx;
+}
+function drawHowto(){
+  // backdrop (same green night vibe as the intro), then a soft dim
+  const g=ctx.createLinearGradient(0,0,0,VH); g.addColorStop(0,"#0a2114"); g.addColorStop(.6,"#06120b"); g.addColorStop(1,"#030704");
+  ctx.fillStyle=g; ctx.fillRect(0,0,VW,VH);
+  ctx.fillStyle="rgba(6,10,20,.45)"; ctx.fillRect(0,0,VW,VH);
+  ctx.textBaseline="alphabetic";   // self-contained: don't rely on button()/panel() leaving it clean
+
+  const pad=18, w=Math.min(560, VW-2*pad), x0=(VW-w)/2, cx=VW/2, inner=w-2*pad;
+  panel(x0, 12, w, VH-24);
+
+  ctx.textAlign="center";
+  ctx.fillStyle="#7CFC6A"; ctx.font="bold "+fitFontSize("🌿 PLAY IT FULLSCREEN",24,inner,"bold")+"px 'Trebuchet MS'";
+  ctx.fillText("🌿 PLAY IT FULLSCREEN", cx, 48);
+  ctx.fillStyle="#cfe0ff"; ctx.font=fitFontSize("A few quick steps for the best run:",13,inner,"")+"px 'Trebuchet MS'";
+  ctx.fillText("A few quick steps for the best run:", cx, 72);
+
+  const here = isStandalone();
+  const installLine = IS_IOS
+    ? "Tap Safari’s Share icon, then “Add to Home Screen”."
+    : "Open the browser menu, then “Install app” / “Add to Home screen”.";
+  // all THREE instructions are always shown; when already installed, steps 1–2 are checked off
+  const steps = [
+    [ here?"✅":"1️⃣", "INSTALL THE APP",
+      here ? "Done — you’re running the installed app." : installLine+"  This unlocks TRUE fullscreen." ],
+    [ here?"✅":"2️⃣", "RELAUNCH FROM THE ICON",
+      here ? "Done — you launched from the home-screen icon." : "Once it’s added, fully close this browser, then tap the new THE KUSH RUSH icon to relaunch." ],
+    [ "📱", "TURN YOUR PHONE SIDEWAYS",
+      "Hold your phone sideways in landscape for a wider view and the best gameplay." ],
+  ];
+
+  const numX=x0+pad, indent=26, textX=x0+pad+indent, textW=inner-indent;
+  const topY=92, botY=VH-78-10;                              // steps live in this vertical band (above the button)
+  const bodyFont="13px 'Trebuchet MS'";
+  const wrapped = steps.map(s=>wrapLines(s[2], bodyFont, textW));
+  let titleH=20, lineH=18, gap=15, bodyPx=13;
+  const blockH=()=> steps.length*titleH + wrapped.reduce((a,ls)=>a+ls.length*lineH,0) + (steps.length-1)*gap;
+  if (blockH() > botY-topY){ const k=(botY-topY)/blockH(); titleH*=k; lineH*=k; gap*=k; bodyPx=Math.max(10,Math.floor(13*k)); }  // never collide with the button
+
+  let y=topY;
+  for (let i=0;i<steps.length;i++){
+    const step=steps[i];
+    ctx.textAlign="left";
+    ctx.font=Math.round(Math.min(18,titleH*0.92))+"px 'Trebuchet MS'"; ctx.fillStyle="#fff"; ctx.fillText(step[0], numX, y+1);
+    ctx.font="bold "+fitFontSize(step[1],15,textW,"bold")+"px 'Trebuchet MS'"; ctx.fillStyle="#ffd54a"; ctx.fillText(step[1], textX, y);
+    y+=titleH;
+    ctx.font=bodyPx+"px 'Trebuchet MS'"; ctx.fillStyle="#cfd8e8";
+    for (const ln of wrapped[i]){ ctx.fillText(ln, textX, y); y+=lineH; }
+    y+=gap;
+  }
+
+  const bw=Math.min(320, inner), bx=cx-bw/2;
+  button(bx, VH-78, bw, 46, "GOT IT  🌿", ()=>leaveHowto());
+  ctx.textAlign="center"; ctx.fillStyle="#8298ba"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText("tap GOT IT or press ENTER", cx, VH-20);
+  ctx.textAlign="left";
+}
+
+// ---- scrollable high-score list (title + game over): shows up to `total` ranks inside a fixed
+// box of height `h`; drag / wheel to scroll. boardRect + boardScrollMax feed the input handlers. ----
+let boardScroll=0, boardScrollMax=0, boardRect=null, _prevScene="";
+function drawBoard(x, y, w, h, total, hiName){
+  const rows = Board.cache.slice(0, total);
+  boardRect = {x, y, w, h};
   if (!rows.length){
+    boardScrollMax=0;
     ctx.textAlign="center"; ctx.fillStyle="#8fa6c8"; ctx.font="14px 'Trebuchet MS'";
     ctx.fillText(Board.status==="loading"?"Loading scores…":"No scores yet — be the first! 🌿", x+w/2, y+16);
     ctx.textAlign="left"; return;
   }
-  const rh=22, sm=w<320;
-  const distW=sm?36:52, kushW=sm?44:58;   // right-side columns (from the right edge): dist, kush, then TOTAL
+  const rh=22, contentH=rows.length*rh;
+  boardScrollMax = Math.max(0, contentH - h);
+  boardScroll = clamp(boardScroll, 0, boardScrollMax);
+  const bar = boardScrollMax>0 ? 7 : 0;          // reserve a sliver for the scrollbar when it's needed
+  const rw = w - bar, sm = rw<320;
+  const distW=sm?36:52, kushW=sm?44:58;          // right-side columns (from the right edge): dist, kush, then TOTAL
+  ctx.save();
+  ctx.beginPath(); ctx.rect(x-10, y, w+20, h); ctx.clip();   // clip rows to the box (highlight bleeds a little)
   for (let i=0;i<rows.length;i++){
-    const r=rows[i], ry=y+i*rh+13, me=hiName&&r.name===hiName;
-    if (me){ ctx.fillStyle="rgba(124,252,106,.20)"; roundRect(x-8,ry-15,w+16,20,6); ctx.fill(); }
+    const ry=y+i*rh+13-boardScroll;
+    if (ry < y-rh || ry > y+h+rh) continue;      // cull rows scrolled out of view
+    const r=rows[i], me=hiName&&r.name===hiName;
+    if (me){ ctx.fillStyle="rgba(124,252,106,.20)"; roundRect(x-8,ry-15,rw+16,20,6); ctx.fill(); }
     ctx.textAlign="left";
     ctx.fillStyle = i===0?"#ffd54a":i===1?"#cfd8e8":i===2?"#e0a878":"#9fb4d6";
     ctx.font="bold "+(sm?12:15)+"px 'Trebuchet MS'"; ctx.fillText((i+1)+".", x, ry);
     ctx.fillStyle = me?"#eaffea":"#fff"; ctx.font=(sm?12:15)+"px 'Trebuchet MS'"; ctx.fillText((r.name||"???").slice(0,10), x+(sm?20:26), ry);
     ctx.textAlign="right";
-    ctx.fillStyle="#8fa6c8"; ctx.font=(sm?10:12)+"px 'Trebuchet MS'"; ctx.fillText((r.dist||0)+"m", x+w, ry);                                  // distance
-    ctx.fillStyle="#9fe89f"; ctx.font="bold "+(sm?11:13)+"px 'Trebuchet MS'"; ctx.fillText(r.score+"🌿", x+w-distW, ry);                       // kush
-    ctx.fillStyle="#ffd54a"; ctx.font="bold "+(sm?13:16)+"px 'Trebuchet MS'"; ctx.fillText(String(Math.round(Board.rankVal(r))), x+w-distW-kushW, ry); // TOTAL points (yellow)
+    ctx.fillStyle="#8fa6c8"; ctx.font=(sm?10:12)+"px 'Trebuchet MS'"; ctx.fillText((r.dist||0)+"m", x+rw, ry);                                  // distance
+    ctx.fillStyle="#9fe89f"; ctx.font="bold "+(sm?11:13)+"px 'Trebuchet MS'"; ctx.fillText(r.score+"🌿", x+rw-distW, ry);                       // kush
+    ctx.fillStyle="#ffd54a"; ctx.font="bold "+(sm?13:16)+"px 'Trebuchet MS'"; ctx.fillText(String(Math.round(Board.rankVal(r))), x+rw-distW-kushW, ry); // TOTAL points (yellow)
     ctx.textAlign="left";
   }
+  ctx.restore();
+  if (boardScrollMax>0){                          // slim scrollbar on the right edge of the box
+    const trackX=x+w-3, frac=h/contentH, thumbH=Math.max(18,h*frac), thumbY=y+(boardScroll/boardScrollMax)*(h-thumbH);
+    ctx.fillStyle="rgba(255,255,255,.10)"; roundRect(trackX,y,3,h,1.5); ctx.fill();
+    ctx.fillStyle="rgba(124,252,106,.6)";  roundRect(trackX,thumbY,3,thumbH,1.5); ctx.fill();
+  }
+}
+// master-mute toggle button (canvas) — registers a uiButton hotspot like every other menu button
+function drawSoundButton(x, y, w, h){
+  button(x, y, w||34, h||28, muted?"🔇":"🔊", toggleMute, "rgba(8,12,24,.62)");
 }
 
 function drawTitle(){
@@ -2337,6 +2515,7 @@ function drawTitle(){
   ctx.fillText("🌿 kush · 🏃 outrun cops · 💵 bribe@100 · 🪽 wings · 🏰 Kush Castles", cx, wide?150:130);
   const empty=!(DB.name&&DB.name.trim());
   const nameCol = (empty&&(needName>0||Math.floor(frameCount/24)%2===0)) ? "#ff6b6b" : "#7CFC6A";
+  drawSoundButton(x0+12, 18);
 
   if (wide){
     const colW=(w-3*pad)/2, Lx=x0+pad, Rx=x0+pad+colW+pad, Lcx=Lx+colW/2, Rcx=Rx+colW/2;
@@ -2347,20 +2526,23 @@ function drawTitle(){
     button(Lx, 320, colW, 50, "▶  PLAY", ()=>startGame());
     button(Lx, 380, colW, 40, "🛍  KUSH SHOP", ()=>openShop(), "rgba(255,213,74,.18)");
     ctx.textAlign="center"; ctx.fillStyle="#8298ba"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText("← → run · SPACE jump · F shoot", Lcx, 440);
+    linkText("ℹ️  How to play fullscreen", Lcx, 470, ()=>{ G.scene="howto"; });
     ctx.fillStyle="#ffd54a"; ctx.font="bold 18px 'Trebuchet MS'"; ctx.fillText("🏆 HIGH SCORES", Rcx, 192);
-    ctx.fillStyle="#8fa6c8"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText(Board.statusLine(), Rcx, 208);
-    ctx.fillStyle="#7CFC6A"; ctx.font="bold 11px 'Trebuchet MS'"; ctx.fillText("⏳ season resets in "+fmtCountdown(seasonEndMs()), Rcx, 222);
-    drawBoardRows(Rx+8, 240, colW-16, 9, null);
+    ctx.fillStyle="#8fa6c8"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText(Board.statusLine(), Rcx, 207);
+    ctx.fillStyle="#9fe89f"; ctx.font="bold 11px 'Trebuchet MS'"; ctx.fillText("🎮 "+fmtInt(Stats.display())+" runs played worldwide", Rcx, 220);
+    ctx.fillStyle="#7CFC6A"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText("⏳ season resets in "+fmtCountdown(seasonEndMs()), Rcx, 233);
+    drawBoard(Rx+8, 246, colW-16, (VH-42)-246, 20, null);
   } else {
     const ix=x0+pad, iw=w-2*pad;
     ctx.fillStyle=nameCol; ctx.font="bold 13px 'Trebuchet MS'"; ctx.textAlign="center"; ctx.fillText(empty?"ENTER YOUR NAME ↓":"YOUR NAME", cx, 166);
     ctx.textAlign="left";
     button(ix, 228, iw, 44, "▶  PLAY", ()=>startGame());
     button(ix, 278, iw, 38, "🛍  KUSH SHOP", ()=>openShop(), "rgba(255,213,74,.18)");
-    ctx.textAlign="center"; ctx.fillStyle="#ffd54a"; ctx.font="bold 15px 'Trebuchet MS'"; ctx.fillText("🏆 HIGH SCORES", cx, 340);
-    ctx.fillStyle="#8fa6c8"; ctx.font="10px 'Trebuchet MS'"; ctx.fillText(Board.statusLine(), cx, 356);
-    ctx.fillStyle="#7CFC6A"; ctx.font="bold 10px 'Trebuchet MS'"; ctx.fillText("⏳ season resets in "+fmtCountdown(seasonEndMs()), cx, 370);
-    drawBoardRows(ix+4, 378, iw-8, 5, null);
+    ctx.textAlign="center"; ctx.fillStyle="#ffd54a"; ctx.font="bold 15px 'Trebuchet MS'"; ctx.fillText("🏆 HIGH SCORES", cx, 338);
+    ctx.fillStyle="#8fa6c8"; ctx.font="10px 'Trebuchet MS'"; ctx.fillText(Board.statusLine()+" · 🎮 "+fmtInt(Stats.display())+" runs", cx, 353);
+    ctx.fillStyle="#7CFC6A"; ctx.font="bold 10px 'Trebuchet MS'"; ctx.fillText("⏳ season resets in "+fmtCountdown(seasonEndMs()), cx, 367);
+    drawBoard(ix+4, 376, iw-8, 114, 20, null);
+    linkText("ℹ️  How to play fullscreen", cx, 508, ()=>{ G.scene="howto"; });
   }
   ctx.fillStyle="#fff"; ctx.globalAlpha=0.6+0.4*Math.sin(frameCount*0.12); ctx.font="bold 14px 'Trebuchet MS'"; ctx.textAlign="center";
   ctx.fillText(empty?"enter a name, then tap to start":"tap / ENTER to start", cx, VH-14); ctx.globalAlpha=1; ctx.textAlign="left";
@@ -2371,6 +2553,7 @@ function drawShop(){
   ctx.fillStyle="rgba(6,10,20,.82)"; ctx.fillRect(0,0,VW,VH);
   const w=Math.min(VW-16, 900), x0=VW/2-w/2, cx=VW/2;
   panel(x0,16,w,VH-32,"rgba(255,213,74,.5)");
+  drawSoundButton(x0+12, 24, 34, 28);
   ctx.textAlign="center"; ctx.fillStyle="#ffd54a"; ctx.font="bold 24px 'Trebuchet MS'"; ctx.fillText("🛍  KUSH SHOP",cx,42);
   ctx.textAlign="left";
   const owned=DB.owned, sel=DB.skin;
@@ -2454,6 +2637,7 @@ function drawGameOver(){
   ctx.fillStyle="rgba(6,10,20,.66)"; ctx.fillRect(0,0,VW,VH);
   const w=Math.min(600,VW-16), x0=VW/2-w/2, cx=VW/2;
   panel(x0,52,w,VH-72);
+  drawSoundButton(x0+12, 60);
   ctx.textAlign="center";
   const hanged=overReason==="hanged";
   ctx.fillStyle="#ff7b7b"; ctx.font="bold 36px 'Trebuchet MS'";
@@ -2474,9 +2658,9 @@ function drawGameOver(){
   const nb=(score>=DB.best&&score>0)?"NEW BEST! ":"";
   ctx.fillStyle="#ffd54a"; ctx.font="13px 'Trebuchet MS'"; ctx.fillText(`${nb}Best ${DB.best}🌿 · ${DB.bestDist} m`,cx,184);
   const rank=Board.rankOf(Board.lastName);
-  ctx.fillStyle="#ffd54a"; ctx.font="bold 17px 'Trebuchet MS'"; ctx.fillText("🏆 HIGH SCORES"+(rank>=0?" · #"+(rank+1):""),cx,214);
-  ctx.fillStyle="#8fa6c8"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText(Board.statusLine(),cx,231);
-  drawBoardRows(x0+22,252,w-44,6,Board.lastName);
+  ctx.fillStyle="#ffd54a"; ctx.font="bold 17px 'Trebuchet MS'"; ctx.fillText("🏆 HIGH SCORES"+(rank>=0?" · #"+(rank+1):""),cx,210);
+  ctx.fillStyle="#8fa6c8"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText(Board.statusLine()+" · 🎮 "+fmtInt(Stats.display())+" runs",cx,226);
+  drawBoard(x0+22,238,w-44,152,20,Board.lastName);
   ctx.textAlign="left";
   const bw=(w-3*16)/2, bx=x0+16;
   button(bx, 396, bw, 44, "↻  RUN AGAIN", ()=>startGame());
@@ -2486,13 +2670,14 @@ function drawGameOver(){
 }
 // small in-game button (top, clear of the controls) → back to the main menu
 function drawMenuButton(){
-  if (VW<720) button(VW-58, 14+safeTop, 50, 22, "≡", quitToMenu, "rgba(8,12,24,.66)");
-  else button(VW/2+76, 8, 104, 28, "≡ MENU", quitToMenu, "rgba(8,12,24,.62)");
+  if (VW<720){ drawSoundButton(VW-98, 14+safeTop, 34, 22); button(VW-58, 14+safeTop, 50, 22, "≡", quitToMenu, "rgba(8,12,24,.66)"); }
+  else { drawSoundButton(VW/2+34, 8, 38, 28); button(VW/2+76, 8, 104, 28, "≡ MENU", quitToMenu, "rgba(8,12,24,.62)"); }  // left of MENU, clear of the top-right police panel
 }
 function drawPaused(){
   ctx.fillStyle="rgba(6,10,20,.62)"; ctx.fillRect(0,0,VW,VH);
   const cx=VW/2;
   ctx.textAlign="center"; ctx.fillStyle="#fff"; ctx.font="bold 36px 'Trebuchet MS'"; ctx.fillText("PAUSED",cx,VH/2-64); ctx.textAlign="left";
+  drawSoundButton(14, 14+safeTop, 40, 30);
   if (VW>=520){
     button(cx-220,VH/2-8,200,50,"▶  RESUME",()=>togglePause());
     button(cx+20,VH/2-8,200,50,"≡  MAIN MENU",()=>quitToMenu(),"rgba(255,255,255,.14)");
@@ -2516,10 +2701,12 @@ function loop(now){
   }
   // keep the global board fresh on menus so new high scores show up for everyone
   if (G.scene!=="play" && Board.global() && frameCount%240===0) Board.refresh();
+  if (G.scene!=="play" && Stats.global() && frameCount%600===0) Stats.fetch();   // refresh the global play count
   render();
   requestAnimationFrame(loop);
 }
 Board.init();
+Stats.fetch();   // load the global "games played" total
 if (DB.name && DB.name.trim()) Profile.load(DB.name);   // adopt cloud account for the saved name
 resetWorld(true);
 requestAnimationFrame(loop);
@@ -2532,10 +2719,14 @@ if ("serviceWorker" in navigator) {
 /* one-time iOS hint: Add to Home Screen = true fullscreen (Safari blocks the in-tab fullscreen API) */
 (function(){
   var el=document.getElementById("iosHint"); if(!el) return;
-  var isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform==="MacIntel" && navigator.maxTouchPoints>1);
-  var standalone = (navigator.standalone===true) || (window.matchMedia && (matchMedia("(display-mode: standalone)").matches || matchMedia("(display-mode: fullscreen)").matches));
+  // reuse the same detection helpers as the how-to screen so the gate can't drift out of sync
+  var isIOS = (typeof IS_IOS!=="undefined") ? IS_IOS
+    : (/iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform==="MacIntel" && navigator.maxTouchPoints>1));
+  var standalone = (typeof isStandalone==="function") ? isStandalone()
+    : ((navigator.standalone===true) || (window.matchMedia && (matchMedia("(display-mode: standalone)").matches || matchMedia("(display-mode: fullscreen)").matches)));
   var seen=false; try{ seen=!!localStorage.getItem("maria_ios_hint"); }catch(e){}
-  if (isIOS && !standalone && !seen){
+  var howtoDone = (typeof howtoSeen==="function") ? howtoSeen() : false;
+  if (isIOS && !standalone && !seen && howtoDone){
     el.style.display="block";
     var dismiss=function(){ el.style.display="none"; try{ localStorage.setItem("maria_ios_hint","1"); }catch(e){} };
     el.addEventListener("click", dismiss);

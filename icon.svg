@@ -1,53 +1,84 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
   <defs>
-    <radialGradient id="bg" cx="50%" cy="38%" r="75%">
-      <stop offset="0%" stop-color="#2bb24a"/>
-      <stop offset="55%" stop-color="#1a7d33"/>
-      <stop offset="100%" stop-color="#0a3c1a"/>
+    <!-- punchy background that makes the rainbow rex pop -->
+    <radialGradient id="bg" cx="50%" cy="42%" r="78%">
+      <stop offset="0%" stop-color="#15224a"/>
+      <stop offset="58%" stop-color="#0a1022"/>
+      <stop offset="100%" stop-color="#05070d"/>
     </radialGradient>
-    <linearGradient id="leaf" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0%" stop-color="#9dff7a"/>
-      <stop offset="100%" stop-color="#3aa53a"/>
+    <radialGradient id="halo" cx="50%" cy="44%" r="52%">
+      <stop offset="0%" stop-color="#7CFC6A" stop-opacity=".42"/>
+      <stop offset="100%" stop-color="#7CFC6A" stop-opacity="0"/>
+    </radialGradient>
+    <!-- full-spectrum RAINBOW sweep across the WHOLE rex (tail=red -> snout=violet) -->
+    <linearGradient id="rex" gradientUnits="userSpaceOnUse" x1="74" y1="170" x2="432" y2="320">
+      <stop offset="0%"   stop-color="#ff2e63"/>
+      <stop offset="20%"  stop-color="#ff8a1e"/>
+      <stop offset="38%"  stop-color="#ffe22e"/>
+      <stop offset="56%"  stop-color="#2fd45f"/>
+      <stop offset="74%"  stop-color="#23a9ff"/>
+      <stop offset="100%" stop-color="#b15cff"/>
     </linearGradient>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="9" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
   </defs>
 
   <!-- background -->
-  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
-  <rect width="512" height="512" rx="112" fill="none" stroke="rgba(255,255,255,.12)" stroke-width="6"/>
+  <rect width="512" height="512" rx="116" fill="url(#bg)"/>
+  <circle cx="256" cy="226" r="190" fill="url(#halo)"/>
 
-  <!-- cannabis leaf (7 leaflets radiating from a stem point) -->
-  <g transform="translate(256,232)" fill="url(#leaf)" stroke="#1f5a22" stroke-width="4" stroke-linejoin="round">
-    <g id="lf">
-      <path d="M0,18 C-16,-30 -10,-104 0,-150 C10,-104 16,-30 0,18 Z"/>
+  <!-- ===== rainbow T-REX (the main character), centred, facing right ===== -->
+  <g filter="url(#glow)">
+    <g stroke="#0d2117" stroke-width="11" stroke-linejoin="round">
+      <!-- tail -->
+      <path d="M168,356 Q104,352 74,318 Q128,346 192,342 Z" fill="url(#rex)"/>
+      <!-- body -->
+      <rect x="150" y="246" width="168" height="150" rx="44" fill="url(#rex)"/>
+      <!-- head -->
+      <rect x="244" y="150" width="160" height="132" rx="46" fill="url(#rex)"/>
+      <!-- snout -->
+      <rect x="372" y="198" width="60" height="62" rx="18" fill="url(#rex)"/>
     </g>
-    <use href="#lf" transform="rotate(33)"/>
-    <use href="#lf" transform="rotate(-33)"/>
-    <use href="#lf" transform="rotate(66) scale(.82)"/>
-    <use href="#lf" transform="rotate(-66) scale(.82)"/>
-    <use href="#lf" transform="rotate(100) scale(.6)"/>
-    <use href="#lf" transform="rotate(-100) scale(.6)"/>
-  </g>
-  <!-- stem -->
-  <rect x="250" y="244" width="12" height="70" rx="5" fill="#5a3a1a"/>
 
-  <!-- T-Rex head peeking bottom-right -->
-  <g transform="translate(300,300)">
-    <path d="M0,40 Q0,0 44,0 L120,0 Q150,0 150,30 L150,70 Q150,92 124,92 L150,92 L150,108 L120,108 Q0,108 0,60 Z"
-          fill="#2faa4a" stroke="#1f7a34" stroke-width="6" stroke-linejoin="round"/>
-    <!-- belly/jaw light -->
-    <path d="M120,92 L150,92 L150,108 L120,108 Z" fill="#bdf5a0"/>
-    <!-- teeth -->
-    <g fill="#ffffff"><rect x="118" y="86" width="8" height="14"/><rect x="132" y="86" width="8" height="14"/><rect x="146" y="86" width="6" height="14"/></g>
+    <!-- belly highlight -->
+    <rect x="176" y="276" width="104" height="112" rx="30" fill="#ffffff" opacity=".26"/>
+
+    <!-- back spikes -->
+    <g fill="#7CFC6A" stroke="#0d2117" stroke-width="7" stroke-linejoin="round">
+      <path d="M196,250 l24,-40 l24,40 Z"/>
+      <path d="M150,262 l22,-36 l22,36 Z"/>
+    </g>
+
+    <!-- tiny arm -->
+    <rect x="300" y="296" width="34" height="16" rx="7" fill="url(#rex)" stroke="#0d2117" stroke-width="8"/>
+
+    <!-- RASTA headband across the forehead -->
+    <g>
+      <rect x="256" y="160" width="128" height="17" rx="3" fill="#e53935"/>
+      <rect x="256" y="177" width="128" height="15" rx="3" fill="#fdd835"/>
+      <rect x="256" y="192" width="128" height="14" rx="3" fill="#43a047"/>
+    </g>
+
     <!-- eye -->
-    <circle cx="118" cy="34" r="15" fill="#fff"/><circle cx="122" cy="34" r="7" fill="#111"/>
-    <!-- rasta bandana -->
-    <rect x="40" y="2" width="92" height="9" fill="#e53935"/>
-    <rect x="40" y="11" width="92" height="8" fill="#fdd835"/>
-    <rect x="40" y="19" width="92" height="7" fill="#43a047"/>
+    <circle cx="346" cy="224" r="26" fill="#fff"/>
+    <circle cx="356" cy="224" r="13" fill="#0d2117"/>
+    <circle cx="361" cy="218" r="4.5" fill="#fff"/>
+    <!-- nostril -->
+    <circle cx="420" cy="216" r="4.5" fill="#0d2117"/>
+    <!-- teeth (toothy grin on the lower jaw) -->
+    <g fill="#fff">
+      <rect x="374" y="252" width="13" height="20"/>
+      <rect x="392" y="252" width="13" height="20"/>
+      <rect x="410" y="252" width="11" height="17"/>
+    </g>
   </g>
 
-  <!-- little smoke puffs -->
-  <g fill="rgba(255,255,255,.6)">
-    <circle cx="430" cy="150" r="14"/><circle cx="452" cy="124" r="11"/><circle cx="470" cy="100" r="8"/>
+  <!-- cannabis-leaf sparkle, top-right -->
+  <g transform="translate(404,118) scale(.62)" fill="#7CFC6A" stroke="#1f5a22" stroke-width="5" stroke-linejoin="round">
+    <path d="M0,12 C-11,-20 -7,-70 0,-100 C7,-70 11,-20 0,12 Z"/>
+    <path d="M0,12 C-11,-20 -7,-70 0,-100 C7,-70 11,-20 0,12 Z" transform="rotate(40)"/>
+    <path d="M0,12 C-11,-20 -7,-70 0,-100 C7,-70 11,-20 0,12 Z" transform="rotate(-40)"/>
   </g>
 </svg>
