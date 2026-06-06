@@ -2419,17 +2419,15 @@ function drawHowto(){
   ctx.fillText("A few quick steps for the best run:", cx, 72);
 
   const here = isStandalone();
-  const installLine = IS_IOS
-    ? "Tap Safari’s Share icon, then “Add to Home Screen”."
-    : "Open the browser menu, then “Install app” / “Add to Home screen”.";
+  const installLine = "Open the Share menu in your browser, then press “Add to Home Screen”.";
   // all THREE instructions are always shown; when already installed, steps 1–2 are checked off
   const steps = [
     [ here?"✅":"1️⃣", "INSTALL THE APP",
       here ? "Done — you’re running the installed app." : installLine+"  This unlocks TRUE fullscreen." ],
     [ here?"✅":"2️⃣", "RELAUNCH FROM THE ICON",
-      here ? "Done — you launched from the home-screen icon." : "Once it’s added, fully close this browser, then tap the new THE KUSH RUSH icon to relaunch." ],
+      here ? "Done — you launched from the home-screen icon." : "Close the browser, then relaunch the game from its new home-screen icon." ],
     [ "📱", "TURN YOUR PHONE SIDEWAYS",
-      "Hold your phone sideways in landscape for a wider view and the best gameplay." ],
+      "Turn your phone sideways (landscape), with rotation lock OFF, for the best gameplay." ],
   ];
 
   const numX=x0+pad, indent=26, textX=x0+pad+indent, textW=inner-indent;
