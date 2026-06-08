@@ -196,39 +196,88 @@ const BOARD = {
   basket:   "maria_trex_scores",
   max:      100,
 };
-// ---------------- 3-day competitive season ----------------
-// SEASON_ORIGIN is a fixed UTC anchor; currentSeason() increments every 3 days identically for
-// every client. The first client to touch the board after a rollover wipes scores + stamps the
-// new season number (see Board.unwrap / Board.submit).
-const SEASON_LEN_MS = 3*864e5;                       // 3 days
-const SEASON_ORIGIN = Date.UTC(2026, 5, 5, 0, 0, 0); // 2026-06-05T00:00:00Z (month 5 = June; fixed, never change)
-function currentSeason(){ return Math.floor((Date.now() - SEASON_ORIGIN) / SEASON_LEN_MS); }
-function seasonEndMs(){
-  const end=SEASON_ORIGIN + (currentSeason()+1)*SEASON_LEN_MS;
-  return Math.max(0, end - Date.now());              // ms remaining for the menu countdown
+// ---------------- weekly competitive season — ends Sunday 21:00 Europe/Amsterdam ----------------
+// The season boundary is a fixed sequence of real instants (every Sunday at 21:00 Amsterdam
+// wall-clock, DST-correct), so every client computes the same season number no matter their own
+// timezone. At each boundary the current board is ARCHIVED, never wiped (see Board.unwrap), so the
+// visible all-time board never loses a score — the season just buckets scores by week.
+const SEASON_TZ = "Europe/Amsterdam";
+const SEASON_DEADLINE_HOUR = 21;                       // 21:00 local, every Sunday
+const WEEK_MS = 7*864e5;
+const SEASON_REF_END = Date.UTC(2026, 5, 7, 19, 0, 0); // Sun 2026-06-07 21:00 CEST = 19:00Z — fixed season-index anchor (never change)
+// Amsterdam UTC offset (minutes) at an instant, via the Intl formatToParts trick (+120 CEST / +60 CET).
+function tzOffsetMin(tMs){
+  const dtf=new Intl.DateTimeFormat("en-US",{timeZone:SEASON_TZ,hour12:false,year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit"});
+  const p={}; for(const x of dtf.formatToParts(new Date(tMs))) p[x.type]=x.value;
+  const hh = p.hour==="24" ? 0 : Number(p.hour);
+  return Math.round((Date.UTC(+p.year,+p.month-1,+p.day,hh,+p.minute,+p.second) - tMs)/60000);
 }
+// epoch ms of the first Sunday-21:00-Amsterdam boundary strictly AFTER tMs (DST-correct)
+function seasonEndAt(tMs){
+  const off=tzOffsetMin(tMs);
+  const wall=new Date(tMs+off*60000);                  // read via getUTC* → Amsterdam wall-clock fields
+  const dow=wall.getUTCDay();
+  const past=(wall.getUTCHours()>SEASON_DEADLINE_HOUR)||(wall.getUTCHours()===SEASON_DEADLINE_HOUR&&(wall.getUTCMinutes()>0||wall.getUTCSeconds()>0||wall.getUTCMilliseconds()>0));
+  let add=(7-dow)%7; if(add===0 && past) add=7;        // this Sunday if 21:00 is still ahead, else next Sunday
+  const targetWall=Date.UTC(wall.getUTCFullYear(),wall.getUTCMonth(),wall.getUTCDate()+add,SEASON_DEADLINE_HOUR,0,0);
+  let end=targetWall-off*60000;                         // back to a real instant…
+  const off2=tzOffsetMin(end); if(off2!==off) end=targetWall-off2*60000;   // …re-resolve if the boundary falls the other side of a DST switch
+  return end;
+}
+function currentSeason(){ return Math.round((seasonEndAt(Date.now()) - SEASON_REF_END) / WEEK_MS); }  // integer week index, +1 each Sunday 21:00
+function seasonEndMs(){ return Math.max(0, seasonEndAt(Date.now()) - Date.now()); }                   // ms remaining for a menu countdown
 function fmtCountdown(ms){
   if (ms<0) ms=0;
   const totMin=Math.floor(ms/60000), d=Math.floor(totMin/1440), h=Math.floor((totMin%1440)/60), m=totMin%60;
   return d+"d "+h+"h "+m+"m";
 }
+// timed fetch — aborts a hung/slow Pantry after `ms` so a finish can never block for minutes
+// (live-probed: Pantry can hang 60-90s). A timed-out call rejects fast so the retry/queue logic proceeds.
+async function fetchT(url, opts, ms){
+  ms = ms || 7000;
+  let ac=null, t=null;
+  try{ ac=new AbortController(); t=setTimeout(()=>{ try{ ac.abort(); }catch(e){} }, ms); }catch(e){ ac=null; }
+  try{ return await fetch(url, ac ? Object.assign({}, opts||{}, {signal:ac.signal}) : (opts||{})); }
+  finally{ if(t) clearTimeout(t); }
+}
 const Board = {
-  cache: [], status: "local", lastName: "",
+  cache: [], status: "local", lastName: "", _flushing:false, _seasons:{},
   global(){ return BOARD.provider==="pantry" && BOARD.pantryId.length>10; },
   url(){ return "https://getpantry.cloud/apiv1/pantry/"+BOARD.pantryId+"/basket/"+BOARD.basket; },
   localAll(){ try{ return JSON.parse(localStorage.getItem("maria_scores")||"[]"); }catch(e){ return []; } },
   localSet(a){ try{ localStorage.setItem("maria_scores", JSON.stringify(a)); }catch(e){} },
-  // local scores filtered to the CURRENT season (stale-season locals never re-pollute a fresh board)
-  localCurrent(){ const cur=currentSeason(); return this.localAll().filter(e=> (Number(e.season)||0) >= cur); },
-  // unwrap remote payload into {scores, season}; apply rollover (stale season → wipe).
+  localCurrent(){ return this.localAll(); },                          // ALL-TIME board: keep every local score (never purge by season)
+  // ----- durable pending-upload queue: runs NOT yet confirmed present on the server (survives reloads / tab-close) -----
+  pendingAll(){ try{ return JSON.parse(localStorage.getItem("maria_scores_pending")||"[]"); }catch(e){ return []; } },
+  pendingSet(a){ try{ localStorage.setItem("maria_scores_pending", JSON.stringify((a||[]).slice(-200))); }catch(e){} },
+  pendingAdd(e){ const p=this.pendingAll(); p.push(e); this.pendingSet(p); },
+  eq(a,b){ return !!(a&&b) && a.name===b.name && Number(a.score)===Number(b.score) && (Number(a.ts)||0)===(Number(b.ts)||0); },
+  remoteHas(list, e){ return (list||[]).some(r=> this.eq(r,e)); },
+  // unwrap remote payload into {scores(current season), season, seasons(archive map)}. NON-DESTRUCTIVE:
+  // a season rollover ARCHIVES the old board into seasons[oldSeason] instead of deleting everyone's scores.
   unwrap(d){
-    let scores=[], season=0;
-    if (Array.isArray(d)) scores=d;                                   // legacy bare array → season 0
-    else if (d && typeof d==="object"){ scores=Array.isArray(d.scores)?d.scores:[]; season=Number(d.season)||0; }
+    let scores=[], season=0, seasons={};
+    if (Array.isArray(d)) scores=d.slice();                            // legacy bare array
+    else if (d && typeof d==="object"){
+      scores  = Array.isArray(d.scores) ? d.scores.slice() : [];
+      season  = Number(d.season)||0;
+      if (d.seasons && typeof d.seasons==="object"){ for(const k in d.seasons){ if(Array.isArray(d.seasons[k])) seasons[k]=d.seasons[k]; } }
+    }
     const cur=currentSeason();
-    if (season < cur){ scores=[]; season=cur; }                       // ROLLOVER: first reader wipes
-    return { scores, season };
+    if (season < cur && scores.length){                               // ROLLOVER → archive, never wipe
+      const k=String(season);
+      seasons[k]=this.normalize((seasons[k]||[]).concat(scores));
+      scores=[];
+    }
+    return { scores, season:Math.max(season,cur), seasons:this.pruneSeasons(seasons) };
   },
+  pruneSeasons(seasons){                                              // bound basket size: keep the 30 most-recent archived seasons (~90 days)
+    const keys=Object.keys(seasons||{}).map(Number).filter(n=>!isNaN(n)).sort((a,b)=>b-a);
+    const keep={}; for(const n of keys.slice(0,30)) keep[String(n)]=seasons[String(n)];
+    return keep;
+  },
+  // every score ever recorded (current season + all archived seasons) — the ALL-TIME board
+  flatten(p){ let a=(p&&Array.isArray(p.scores))?p.scores.slice():[]; const ss=(p&&p.seasons)||{}; for(const k in ss){ if(Array.isArray(ss[k])) a=a.concat(ss[k]); } return a; },
   // rank = 66% kush + 33% distance + a HIDDEN secret-collectible bonus (never shown)
   rankVal(e){ return 0.66*(e.score||0) + 0.33*(e.dist||0) + 5*(e.hidden||0); },
   // collapse to one best entry per name (by rank), sort by rank, trim
@@ -246,59 +295,102 @@ const Board = {
   statusLine(){
     if (!this.global()) return "📱 saved on this device";
     if (this.status==="loading") return "🌐 syncing…";
-    if (this.status==="offline") return "🌐 offline · showing saved";
-    return "🌐 shared with everyone";
+    const q=this.pendingAll().length;
+    if (this.status==="offline") return q ? ("🌐 offline · "+q+" waiting to upload") : "🌐 offline · showing saved";
+    return q ? ("🌐 shared · uploading "+q+"…") : "🌐 shared with everyone";
   },
   rankOf(name){ if(!name) return -1; return this.cache.findIndex(r=>r.name===name); },
+  // rebuild the visible all-time board from a remote payload (may be null) + everything we still hold locally
+  rebuild(payload){
+    if (payload && payload.seasons) this._seasons=payload.seasons;
+    const remoteFlat = this.flatten(payload || {scores:[], seasons:this._seasons});
+    this.cache=this.normalize(remoteFlat.concat(this.localAll(), this.pendingAll()));
+  },
   init(){
-    this.cache=this.normalize(this.localCurrent());
+    this.rebuild(null);
     if (this.global()){ this.status="loading"; this.refresh(); }
+  },
+  async readRemote(){
+    try{
+      const r=await fetchT(this.url(),{cache:"no-store"});
+      if(r.ok){ const d=await r.json(); return this.unwrap(d); }
+      if(r.status===400) return this.unwrap({});   // basket not created yet → empty & writable (lets the FIRST score create it)
+    }catch(e){}
+    return null;                                   // timeout / 5xx / 429 → unknown server state, never blind-overwrite
   },
   async refresh(){
     if (!this.global()) return;
-    try{
-      const res=await fetch(this.url(),{cache:"no-store"});
-      let payload={scores:[],season:currentSeason()};
-      if(res.ok){ payload=this.unwrap(await res.json()); }
-      this.cache=this.normalize(payload.scores.concat(this.localCurrent()));
-      this.status="online";
-    }catch(e){ this.status="offline"; this.cache=this.normalize(this.cache.concat(this.localCurrent())); }  // network failed: KEEP the last-good board, never downgrade to local-only
+    const payload=await this.readRemote();
+    if (payload===null){ this.status="offline"; this.rebuild(null); return; }  // outage: keep last-good + locals, never blank out
+    this.status="online";
+    this.rebuild(payload);
+    this.flushPending(payload);                                                // opportunistically re-push anything the server is still missing
   },
-  same(a,b){ if(a.length!==b.length) return false; for(let i=0;i<a.length;i++){ const x=a[i],y=b[i]; if(x.name!==y.name||x.score!==y.score||x.dist!==y.dist||(x.hidden||0)!==(y.hidden||0)) return false; } return true; },
-  async readRemote(){ try{ const r=await fetch(this.url(),{cache:"no-store"}); if(r.ok){ const d=await r.json(); return this.unwrap(d); } }catch(e){} return null; },
-  async submit(entry){
+  // write payload: keep the server's archived seasons; merge in every run we still hold (local + queued + extra).
+  // current/unstamped runs land in `scores`; any older queued run is folded into its season archive so the
+  // pending queue always drains even if a score was held offline across a weekly season boundary.
+  writeBody(payload, extra){
     const cur=currentSeason();
-    entry.season=cur;                                                  // stamp the run's season
-    let local=this.localAll(); local.push(entry);
-    local=local.filter(e=> (Number(e.season)||0) >= cur);             // drop last-season locals
-    this.localSet(local);                                             // instant + offline-proof
-    // keep everyone else's already-loaded scores so the game-over board isn't reduced to just THIS device
-    this.cache=this.normalize(this.cache.concat(local));
-    this.lastName=entry.name;
-    if (!this.global()) return;
-    this.status="loading";
+    const seasons=Object.assign({}, this.pruneSeasons((payload&&payload.seasons)||this._seasons||{}));
+    const curEntries=[], byOld={};
+    for (const e of this.localAll().concat(this.pendingAll(), extra||[])){
+      const s=(e.season==null) ? cur : (Number(e.season)||0);
+      if (s>=cur) curEntries.push(e);
+      else { const k=String(s); (byOld[k]=byOld[k]||[]).push(e); }
+    }
+    for (const k in byOld) seasons[k]=this.normalize((seasons[k]||[]).concat(byOld[k]));
+    const scores=this.normalize(((payload&&payload.scores)||[]).concat(curEntries));
+    return { scores, season:cur, seasons:this.pruneSeasons(seasons) };
+  },
+  async write(body){
+    // keepalive:true lets the browser finish the POST even if the page is closed right after a finish
+    try{ const w=await fetchT(this.url(),{ method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body), keepalive:true }, 9000); return !!(w&&w.ok); }catch(e){ return false; }
+  },
+  // re-push every queued run the server doesn't have yet; drop from the queue ONLY once a read CONFIRMS it landed
+  async flushPending(known){
+    if (!this.global() || this._flushing) return;
+    if (!this.pendingAll().length) return;
+    this._flushing=true;
     try{
-      // reconcile loop: read → merge (keeps the HIGHEST per name) → write → re-read; repeat until
-      // the server already contains our merged set, so a concurrent write can never drop a high score.
-      let merged=this.normalize(local), ok=false;
-      for (let pass=0; pass<3; pass++){
-        const rr=await this.readRemote();                             // {scores,season} (rolled) or null
-        const remote=rr ? rr.scores : null;
-        const writeSeason=Math.max(cur, rr ? (Number(rr.season)||0) : 0); // never roll the server's season backward
-        const combined=this.normalize((remote||[]).concat(merged));
-        if (remote!==null && this.same(this.normalize(remote), combined)){ merged=combined; ok=true; break; }   // already in sync
-        merged=combined;
-        try{ const w=await fetch(this.url(),{ method:"POST", headers:{"Content-Type":"application/json"},
-              body:JSON.stringify({scores:merged, season:writeSeason}) }); ok=ok||w.ok; }catch(e){}
+      let payload = (known!==undefined && known!==null) ? known : await this.readRemote();
+      if (payload===null){ this.status="offline"; return; }                    // can't read → keep queue, retry later
+      const missing=this.pendingAll().filter(e=> !this.remoteHas(this.flatten(payload), e));
+      if (missing.length){
+        if (await this.write(this.writeBody(payload, missing))){
+          const after=await this.readRemote(); if(after!==null) payload=after;
+        }
       }
-      // merge, don't REPLACE: if the remote read failed, `merged` is local-only — keep the full board too
-      this.cache=this.normalize(this.cache.concat(merged)); this.status= ok?"online":"offline";
+      const confirmed=this.flatten(payload);
+      this.pendingSet(this.pendingAll().filter(e=> !this.remoteHas(confirmed, e)));
+      this.rebuild(payload);
+      this.status="online";
     }catch(e){ this.status="offline"; }
+    finally{ this._flushing=false; }
+  },
+  async submit(entry){
+    entry.season=currentSeason();                                             // stamp the run's season
+    const local=this.localAll(); local.push(entry); this.localSet(local.slice(-300));   // instant + offline-proof (NEVER deleted by season)
+    this.lastName=entry.name;
+    this.rebuild(null);                                                       // show it on THIS device immediately
+    if (!this.global()) return;
+    this.pendingAdd(entry);                                                   // durable queue → survives reload / tab-close / outage
+    this.status="loading";
+    let payload=await this.readRemote();
+    if (payload===null){ this.status="offline"; return; }                    // outage: stays queued; flushPending retries on next load / online / focus
+    if (!this.remoteHas(this.flatten(payload), entry)){                       // READ-GUARDED write: never blind-overwrite when the read failed
+      if (await this.write(this.writeBody(payload, [entry]))){
+        const after=await this.readRemote(); if(after!==null) payload=after;
+      }
+    }
+    const present=this.remoteHas(this.flatten(payload), entry);              // confirm by READ-BACK, not by POST status
+    if (present) this.pendingSet(this.pendingAll().filter(e=> !this.eq(e, entry)));
+    this.rebuild(payload);
+    this.status = present ? "online" : "offline";
   },
 };
 
 // ---------------- global "games played" counter (all-time, survives season resets) ----------------
-// Lives in its OWN Pantry basket so the 3-day score wipe never touches it. Best-effort: a read-
+// Lives in its OWN Pantry basket so the weekly season rollover never touches it. Best-effort: a read-
 // modify-write bump per finished run; concurrent finishes may rarely drop a count (fine for a vanity stat).
 const STATS = { pantryId: BOARD.pantryId, basket: "maria_trex_stats" };
 const Stats = {
@@ -310,16 +402,16 @@ const Stats = {
   display(){ return this.plays>=0 ? this.plays : this.localPlays(); },   // global if synced, else the local tally
   async fetch(){
     if (!this.global()) return;
-    try{ const r=await fetch(this.url(),{cache:"no-store"}); if(r.ok){ const d=await r.json(); this.plays=Math.max(0,Math.floor(Number(d&&d.plays)||0)); } }catch(e){}
+    try{ const r=await fetchT(this.url(),{cache:"no-store"}); if(r.ok){ const d=await r.json(); this.plays=Math.max(0,Math.floor(Number(d&&d.plays)||0)); } }catch(e){}
   },
   async bump(){
     this.bumpLocal();                                              // always count locally (offline-proof)
     if (!this.global()) return;
     try{
       let cur=0;
-      try{ const r=await fetch(this.url(),{cache:"no-store"}); if(r.ok){ const d=await r.json(); cur=Math.max(0,Math.floor(Number(d&&d.plays)||0)); } }catch(e){}
+      try{ const r=await fetchT(this.url(),{cache:"no-store"}); if(r.ok){ const d=await r.json(); cur=Math.max(0,Math.floor(Number(d&&d.plays)||0)); } }catch(e){}
       const next=Math.max(cur, this.plays<0?0:this.plays)+1;
-      const w=await fetch(this.url(),{ method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({plays:next}) });
+      const w=await fetchT(this.url(),{ method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({plays:next}) });
       if (w.ok) this.plays=next;
     }catch(e){}
   },
@@ -336,7 +428,7 @@ const Profile = {
   status: "local",          // "local" | "loading" | "synced" | "offline"
   loadedName: "",           // name whose profile is currently adopted in DB
   saving: false, dirty: false, syncedBank: 0,
-  key(name){ return (name||"").toString().toUpperCase().replace(/[^A-Z0-9 _-]/g,"").slice(0,10).trim(); },
+  key(name){ const raw=(name||"").toString().toUpperCase(); const k=raw.replace(/[^A-Z0-9 _-]/g,"").slice(0,10).trim(); return k || raw.trim().slice(0,10); },  // emoji/symbol-only name keeps its own identity instead of folding into "PLAYER"
   global(){ return PROFILES.pantryId && PROFILES.pantryId.length>10; },
   url(){ return "https://getpantry.cloud/apiv1/pantry/"+PROFILES.pantryId+"/basket/"+PROFILES.basket; },
   statusLine(){
@@ -374,7 +466,7 @@ const Profile = {
     if (DB.owned.indexOf(DB.skin)<0) DB.skin = DB.owned[DB.owned.length-1] || "classic"; // keep equipped valid
   },
   async readBasket(){
-    try{ const r=await fetch(this.url(),{cache:"no-store"}); if(r.ok){ const d=await r.json(); return (d&&typeof d==="object")?d:{}; } }catch(e){}
+    try{ const r=await fetchT(this.url(),{cache:"no-store"}); if(r.ok){ const d=await r.json(); return (d&&typeof d==="object")?d:{}; } }catch(e){}
     return null;   // null = couldn't read (offline / 400 on first-ever basket)
   },
   // ADOPT the remote profile for `name` into DB (local as base, remote as override → no progress lost).
@@ -410,7 +502,7 @@ const Profile = {
         DB.bank=merged.bank; this.syncedBank=merged.bank;       // re-anchor to what we just persisted
         const body=Object.assign({}, basket||{}, {profiles});   // preserve any sibling top-level keys
         let ok=false;
-        try{ const w=await fetch(this.url(),{ method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body) }); ok=w.ok; }catch(e){}
+        try{ const w=await fetchT(this.url(),{ method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body) }); ok=w.ok; }catch(e){}
         if (ok){
           const after=await this.readBasket();              // verify our slot landed; if raced, retry fresh
           const got=after && after.profiles && after.profiles[k];
@@ -1381,9 +1473,11 @@ function bankAndSubmit(){
   if (score>DB.best) DB.best=score;
   if (distance>DB.bestDist) DB.bestDist=distance;
   const nm = Profile.key(DB.name) || "PLAYER";
-  Board.submit({ name:nm, score:Math.floor(score), dist:Math.floor(distance), hidden:Math.floor(hidden), ts:Date.now() });
-  Profile.save();                        // push bank/best/bestDist (+owned/skin/pet) to the cloud account
-  Stats.bump();                          // +1 to the global all-time "games played" counter
+  // serialize the 3 cloud writes (SCORE first) so a single free Pantry account isn't slammed by ~17 concurrent requests
+  Board.submit({ name:nm, score:Math.floor(score), dist:Math.floor(distance), hidden:Math.floor(hidden), ts:Date.now() })
+    .then(()=>Profile.save())            // push bank/best/bestDist (+owned/skin/pet) to the cloud account
+    .then(()=>Stats.bump())              // +1 to the global all-time "games played" counter
+    .catch(()=>{ try{ Profile.save(); }catch(e){} try{ Stats.bump(); }catch(e){} });
 }
 function gameOver(){ G.scene="over"; bankAndSubmit(); }
 // in-game "back to menu": bank + submit the run (nothing lost), then to the title
@@ -2439,7 +2533,7 @@ const GUIDE_BLOCKS = [
      "You start with 3. You lose one when the cops bust you, a narc or a bullet hits you, or you fall into a pit or lava. Beating the boss earns one back." ]},
   { h:"🏆  POINTS & LEADERBOARD", c:"#9fe89f", body:[
      "Your run total = 66% of your kush 🌿 + 33% of your distance (m) + secret hidden bonuses.",
-     "Kush is banked after every run — spend it in the 🛍 KUSH SHOP on Rex skins and the 🦅 Kush Eagle pet. The season leaderboard resets to keep things fair." ]},
+     "Kush is banked after every run — spend it in the 🛍 KUSH SHOP on Rex skins and the 🦅 Kush Eagle pet. The global high-score board keeps everyone's best run — your scores never reset." ]},
 ];
 
 function drawGuide(){
@@ -2612,7 +2706,7 @@ function drawBoard(x, y, w, h, total, hiName){
   if (!rows.length){
     boardScrollMax=0;
     ctx.textAlign="center"; ctx.fillStyle="#8fa6c8"; ctx.font="14px 'Trebuchet MS'";
-    ctx.fillText(Board.status==="loading"?"Loading scores…":"No scores yet — be the first! 🌿", x+w/2, y+16);
+    ctx.fillText(Board.status==="loading"?"Loading scores…":(Board.status==="offline"?"Offline — showing your saved scores 🌿":"No scores yet — be the first! 🌿"), x+w/2, y+16);
     ctx.textAlign="left"; return;
   }
   const rh=22, contentH=rows.length*rh;
@@ -2676,8 +2770,8 @@ function drawTitle(){
     ctx.fillStyle="#ffd54a"; ctx.font="bold 18px 'Trebuchet MS'"; ctx.fillText("🏆 HIGH SCORES", Rcx, 192);
     ctx.fillStyle="#8fa6c8"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText(Board.statusLine(), Rcx, 207);
     ctx.fillStyle="#9fe89f"; ctx.font="bold 11px 'Trebuchet MS'"; ctx.fillText("🎮 "+fmtInt(Stats.display())+" runs played worldwide", Rcx, 220);
-    ctx.fillStyle="#7CFC6A"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText("⏳ season resets in "+fmtCountdown(seasonEndMs()), Rcx, 233);
-    drawBoard(Rx+8, 246, colW-16, (VH-42)-246, 20, null);
+    ctx.fillStyle="#7CFC6A"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText("🌿 all-time top "+BOARD.max+" · scores never reset", Rcx, 233);
+    drawBoard(Rx+8, 246, colW-16, (VH-42)-246, BOARD.max, null);
   } else {
     const ix=x0+pad, iw=w-2*pad;
     ctx.fillStyle=nameCol; ctx.font="bold 13px 'Trebuchet MS'"; ctx.textAlign="center"; ctx.fillText(empty?"ENTER YOUR NAME ↓":"YOUR NAME", cx, 160);
@@ -2687,8 +2781,8 @@ function drawTitle(){
     button(ix, 312, iw, 36, "📖  HOW TO PLAY", ()=>openGuide("title"), "rgba(88,166,255,.18)");
     ctx.textAlign="center"; ctx.fillStyle="#ffd54a"; ctx.font="bold 15px 'Trebuchet MS'"; ctx.fillText("🏆 HIGH SCORES", cx, 368);
     ctx.fillStyle="#8fa6c8"; ctx.font="10px 'Trebuchet MS'"; ctx.fillText(Board.statusLine()+" · 🎮 "+fmtInt(Stats.display())+" runs", cx, 381);
-    ctx.fillStyle="#7CFC6A"; ctx.font="bold 10px 'Trebuchet MS'"; ctx.fillText("⏳ season resets in "+fmtCountdown(seasonEndMs()), cx, 393);
-    drawBoard(ix+4, 400, iw-8, 94, 20, null);
+    ctx.fillStyle="#7CFC6A"; ctx.font="bold 10px 'Trebuchet MS'"; ctx.fillText("🌿 all-time top "+BOARD.max+" · never resets", cx, 393);
+    drawBoard(ix+4, 400, iw-8, 94, BOARD.max, null);
     linkText("ℹ️  How to play fullscreen", cx, 508, ()=>{ G.scene="howto"; });
   }
   ctx.fillStyle="#fff"; ctx.globalAlpha=0.6+0.4*Math.sin(frameCount*0.12); ctx.font="bold 14px 'Trebuchet MS'"; ctx.textAlign="center";
@@ -2807,7 +2901,7 @@ function drawGameOver(){
   const rank=Board.rankOf(Board.lastName);
   ctx.fillStyle="#ffd54a"; ctx.font="bold 17px 'Trebuchet MS'"; ctx.fillText("🏆 HIGH SCORES"+(rank>=0?" · #"+(rank+1):""),cx,210);
   ctx.fillStyle="#8fa6c8"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText(Board.statusLine()+" · 🎮 "+fmtInt(Stats.display())+" runs",cx,226);
-  drawBoard(x0+22,238,w-44,152,20,Board.lastName);
+  drawBoard(x0+22,238,w-44,152,BOARD.max,Board.lastName);
   ctx.textAlign="left";
   const bw=(w-3*16)/2, bx=x0+16;
   button(bx, 396, bw, 44, "↻  RUN AGAIN", ()=>startGame());
@@ -2862,6 +2956,10 @@ function loop(now){
 Board.init();
 Stats.fetch();   // load the global "games played" total
 if (DB.name && DB.name.trim()) Profile.load(DB.name);   // adopt cloud account for the saved name
+// durable delivery: whenever we regain focus / connectivity, re-push any runs that never reached the cloud
+addEventListener("online", ()=>{ try{ Board.flushPending(); }catch(e){} });
+addEventListener("pageshow", ()=>{ try{ Board.flushPending(); }catch(e){} });
+document.addEventListener("visibilitychange", ()=>{ if(!document.hidden){ try{ Board.flushPending(); }catch(e){} } });
 resetWorld(true);
 requestAnimationFrame(loop);
 </script>
