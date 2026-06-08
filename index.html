@@ -378,21 +378,16 @@ const Board = {
   remoteHas(list, e){ return (list||[]).some(r=> this.eq(r,e)); },
   // unwrap remote payload into {scores(current season), season, seasons(archive map)}. NON-DESTRUCTIVE:
   // a season rollover ARCHIVES the old board into seasons[oldSeason] instead of deleting everyone's scores.
+  // ALL-TIME board: fold the live scores AND every archived season bucket into one list — nothing is
+  // ever hidden by season. Every player's best run counts, forever, for this season and all seasons.
   unwrap(d){
-    let scores=[], season=0, seasons={};
-    if (Array.isArray(d)) scores=d.slice();                            // legacy bare array
+    let all=[];
+    if (Array.isArray(d)) all=d.slice();                              // legacy bare array
     else if (d && typeof d==="object"){
-      scores  = Array.isArray(d.scores) ? d.scores.slice() : [];
-      season  = Number(d.season)||0;
-      if (d.seasons && typeof d.seasons==="object"){ for(const k in d.seasons){ if(Array.isArray(d.seasons[k])) seasons[k]=d.seasons[k]; } }
+      if (Array.isArray(d.scores)) all=all.concat(d.scores);
+      if (d.seasons && typeof d.seasons==="object"){ for(const k in d.seasons){ if(Array.isArray(d.seasons[k])) all=all.concat(d.seasons[k]); } }
     }
-    const cur=currentSeason();
-    if (season < cur && scores.length){                               // ROLLOVER → archive, never wipe
-      const k=String(season);
-      seasons[k]=this.normalize((seasons[k]||[]).concat(scores));
-      scores=[];
-    }
-    return { scores, season:Math.max(season,cur), seasons:this.pruneSeasons(seasons) };
+    return { scores:this.normalize(all), season:currentSeason(), seasons:{} };
   },
   pruneSeasons(seasons){                                              // bound basket size: keep the 30 most-recent archived seasons (~90 days)
     const keys=Object.keys(seasons||{}).map(Number).filter(n=>!isNaN(n)).sort((a,b)=>b-a);
@@ -423,23 +418,20 @@ const Board = {
     return q ? ("🌐 shared · uploading "+q+"…") : "🌐 shared with everyone";
   },
   rankOf(name){ if(!name) return -1; return this.cache.findIndex(r=>r.name===name); },
-  // scores shown on the competitive board = current season ∪ previous season — last season carries over
-  // until THIS season ends (Sunday 21:00). Older seasons stay ARCHIVED in the payload (kept, never deleted).
-  seasonBoard(payload){
-    const cur=currentSeason();
-    const pool=(payload&&Array.isArray(payload.scores)) ? payload.scores.slice() : [];          // current live scores
-    const ss=(payload&&payload.seasons)||this._seasons||{};
-    for (const k of [String(cur), String(cur-1)]) if (Array.isArray(ss[k])) for(const e of ss[k]) pool.push(e);  // this + last season's archive
-    for (const e of this.localAll().concat(this.pendingAll())){                                  // our own runs (incl. offline) from this or last season
-      const s=(e&&e.season==null) ? cur : (Number(e&&e.season)||0);
-      if (s>=cur-1) pool.push(e);
-    }
-    return this.normalize(pool);
-  },
-  // rebuild the visible (season) board from a remote payload (may be null) + everything we still hold locally
+  // the visible board is ALL-TIME: every player's best run across all history + this device's own runs.
   rebuild(payload){
-    if (payload && payload.seasons) this._seasons=payload.seasons;
-    this.cache=this.seasonBoard(payload || {scores:[], seasons:this._seasons});
+    const remote=(payload&&Array.isArray(payload.scores))?payload.scores.slice():[];
+    this.cache=this.normalize(remote.concat(this.localAll(), this.pendingAll()));
+  },
+  // make sure THIS device's best runs are on the shared board — so every cross-device play is saved (top 100)
+  syncLocalUp(payload){
+    if (!this.global()) return;
+    const known=this.flatten(payload||{}), pend=this.pendingAll();
+    for (const e of this.normalize(this.localAll())){               // this device's best run per name
+      const on=known.find(r=>r.name===e.name);
+      if (on && this.rankVal(on)>=this.rankVal(e)) continue;        // board already holds an equal/better run for this name
+      if (!this.remoteHas(pend, e)) this.pendingAdd(e);             // queue it → flushPending uploads it to the shared board
+    }
   },
   init(){
     this.rebuild(null);
@@ -483,23 +475,14 @@ const Board = {
     if (payload===null){ this.status="offline"; this.rebuild(null); return; }  // outage: keep last-good + locals, never blank out
     this.status="online";
     this.rebuild(payload);
-    this.flushPending(payload);                                                // opportunistically re-push anything the server is still missing
+    this.syncLocalUp(payload);                                                 // push any of this device's runs the shared board is still missing
+    this.flushPending(payload);                                                // upload the pending queue (incl. what syncLocalUp just added)
   },
-  // write payload: keep the server's archived seasons; merge in every run we still hold (local + queued + extra).
-  // current/unstamped runs land in `scores`; any older queued run is folded into its season archive so the
-  // pending queue always drains even if a score was held offline across a weekly season boundary.
+  // write the ALL-TIME board: merge the server's scores with everyone's runs we hold (local + queued + extra),
+  // keep the single best per name, top 100. Never buckets/archives → nothing drops off by season.
   writeBody(payload, extra){
-    const cur=currentSeason();
-    const seasons=Object.assign({}, this.pruneSeasons((payload&&payload.seasons)||this._seasons||{}));
-    const curEntries=[], byOld={};
-    for (const e of this.localAll().concat(this.pendingAll(), extra||[])){
-      const s=(e.season==null) ? cur : (Number(e.season)||0);
-      if (s>=cur) curEntries.push(e);
-      else { const k=String(s); (byOld[k]=byOld[k]||[]).push(e); }
-    }
-    for (const k in byOld) seasons[k]=this.normalize((seasons[k]||[]).concat(byOld[k]));
-    const scores=this.normalize(((payload&&payload.scores)||[]).concat(curEntries));
-    return { scores, season:cur, seasons:this.pruneSeasons(seasons) };
+    const all=((payload&&Array.isArray(payload.scores))?payload.scores:[]).concat(this.localAll(), this.pendingAll(), extra||[]);
+    return { scores:this.normalize(all), season:currentSeason(), seasons:{} };
   },
   async write(body){ return await CLOUD.write("scores", body); },   // primary first, Pantry fallback (keepalive lets a finish complete after the page closes)
   // re-push every queued run the server doesn't have yet; drop from the queue ONLY once a read CONFIRMS it landed
@@ -2969,10 +2952,10 @@ function drawTitle(){
     button(Lx, 416, colW, 38, "📖  HOW TO PLAY", ()=>openGuide("title"), "rgba(88,166,255,.18)");
     ctx.textAlign="center"; ctx.fillStyle="#8298ba"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText("← → run · SPACE jump · F shoot", Lcx, 470);
     linkText("ℹ️  How to play fullscreen", Lcx, 494, ()=>{ G.scene="howto"; });
-    ctx.fillStyle="#ffd54a"; ctx.font="bold 18px 'Trebuchet MS'"; ctx.fillText("🏆 HIGH SCORES", Rcx, 192);
+    ctx.fillStyle="#ffd54a"; ctx.font="bold 18px 'Trebuchet MS'"; ctx.fillText("🏆 ALL-TIME TOP "+BOARD.max, Rcx, 192);
     ctx.fillStyle="#8fa6c8"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText(Board.statusLine(), Rcx, 207);
-    ctx.fillStyle="#9fe89f"; ctx.font="bold 11px 'Trebuchet MS'"; ctx.fillText("🎮 "+fmtInt(Stats.display())+" runs played worldwide", Rcx, 220);
-    ctx.fillStyle="#ffd54a"; ctx.font="bold 11px 'Trebuchet MS'"; ctx.fillText("🏁 Ends Sun 21:00 · "+fmtCountdown(seasonEndMs()), Rcx, 233);
+    ctx.fillStyle="#9fe89f"; ctx.font="bold 11px 'Trebuchet MS'"; ctx.fillText("🎮 "+fmtInt(Stats.display())+" runs · all players", Rcx, 220);
+    ctx.fillStyle="#ffd54a"; ctx.font="bold 11px 'Trebuchet MS'"; ctx.fillText("🏁 Season "+seasonLabel()+" ends "+fmtCountdown(seasonEndMs()), Rcx, 233);
     drawBoard(Rx+8, 246, colW-16, (VH-42)-246, BOARD.max, null);
   } else {
     const ix=x0+pad, iw=w-2*pad;
@@ -2982,9 +2965,9 @@ function drawTitle(){
     button(ix, 272, iw/2-4, 36, "🛍  SHOP", ()=>openShop(), "rgba(255,213,74,.18)");
     button(ix+iw/2+4, 272, iw/2-4, 36, "🎖  PASS", ()=>openPass(), "rgba(201,160,255,.20)");
     button(ix, 312, iw, 36, "📖  HOW TO PLAY", ()=>openGuide("title"), "rgba(88,166,255,.18)");
-    ctx.textAlign="center"; ctx.fillStyle="#ffd54a"; ctx.font="bold 15px 'Trebuchet MS'"; ctx.fillText("🏆 HIGH SCORES", cx, 368);
-    ctx.fillStyle="#8fa6c8"; ctx.font="10px 'Trebuchet MS'"; ctx.fillText(Board.statusLine()+" · 🎮 "+fmtInt(Stats.display())+" runs", cx, 381);
-    ctx.fillStyle="#ffd54a"; ctx.font="bold 10px 'Trebuchet MS'"; ctx.fillText("🏁 Season ends in "+fmtCountdown(seasonEndMs())+" · Sun 21:00", cx, 393);
+    ctx.textAlign="center"; ctx.fillStyle="#ffd54a"; ctx.font="bold 15px 'Trebuchet MS'"; ctx.fillText("🏆 ALL-TIME TOP "+BOARD.max, cx, 368);
+    ctx.fillStyle="#8fa6c8"; ctx.font="10px 'Trebuchet MS'"; ctx.fillText(Board.statusLine()+" · every device", cx, 381);
+    ctx.fillStyle="#ffd54a"; ctx.font="bold 10px 'Trebuchet MS'"; ctx.fillText("🏁 Season "+seasonLabel()+" ends in "+fmtCountdown(seasonEndMs()), cx, 393);
     drawBoard(ix+4, 400, iw-8, 94, BOARD.max, null);
     linkText("ℹ️  How to play fullscreen", cx, 508, ()=>{ G.scene="howto"; });
   }
