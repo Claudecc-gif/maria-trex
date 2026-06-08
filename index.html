@@ -149,6 +149,10 @@ const DB = {
   set name(v){ localStorage.setItem("maria_name", (v||"").toString().toUpperCase().replace(/[^A-Z0-9 _-]/g,"").slice(0,10)); },
   get pet(){ return localStorage.getItem("maria_pet")==="1"; },
   set pet(v){ localStorage.setItem("maria_pet", v?"1":"0"); },
+  get passXP(){ return Number(localStorage.getItem("maria_passxp")||0); },          // battle-pass progress: total XP ever earned
+  set passXP(v){ localStorage.setItem("maria_passxp", Math.max(0,Math.floor(v))); },
+  get passTier(){ return Number(localStorage.getItem("maria_passtier")||0); },       // highest battle-pass tier already CLAIMED
+  set passTier(v){ localStorage.setItem("maria_passtier", Math.max(0,Math.floor(v))); },
 };
 
 const SKINS = [
@@ -167,10 +171,31 @@ const SKINS = [
   {id:"chrome",  name:"Chrome Rex",  cost:6500, body:"#b9c2cc", dark:"#5a6470", belly:"#e9eef3", acc:"shades"},
   {id:"prism",   name:"Prism Rex",   cost:8000, body:"#cfe9ff", dark:"#6aa0d0", belly:"#ffffff", acc:"diamond"},
   {id:"aurora",  name:"Aurora Rex",  cost:9500, body:"#7af0c0", dark:"#2f9fb0", belly:"#dffff4", acc:"galaxy"},
+  {id:"sunset",  name:"Sunset Rex",   cost:11000, body:"#ff8a3d", dark:"#c4561a", belly:"#ffe0b0", acc:"halo"},
+  {id:"ocean",   name:"Ocean Rex",    cost:12500, body:"#1ea7c4", dark:"#0e6680", belly:"#bde6f5", acc:"ice"},
+  {id:"venom",   name:"Venom Rex",    cost:14000, body:"#9be01f", dark:"#5e8c10", belly:"#e6ffb0", acc:"brain"},
+  {id:"royal",   name:"Royal Rex",    cost:16000, body:"#5b3fd1", dark:"#371f8c", belly:"#cdbcff", acc:"crown"},
+  {id:"midnight",name:"Midnight Rex", cost:18000, body:"#27314a", dark:"#141a2c", belly:"#8ea0c4", acc:"shades"},
+  {id:"candy",   name:"Candy Rex",    cost:20000, body:"#ff8fc4", dark:"#d44e93", belly:"#ffe1f0", acc:"halo"},
+  {id:"ember",   name:"Ember Rex",    cost:23000, body:"#ff4d2e", dark:"#a82412", belly:"#ffba8a", acc:"horns"},
+  {id:"jade",    name:"Jade Rex",     cost:26000, body:"#2bd17a", dark:"#177a45", belly:"#bdf5d6", acc:"rasta"},
+  {id:"obsidian",name:"Obsidian Rex", cost:30000, body:"#2b2b33", dark:"#141418", belly:"#7a7a8c", acc:"devil"},
+  {id:"cosmic",  name:"Cosmic Rex",   cost:35000, body:"#4a2f8c", dark:"#281a4f", belly:"#c0a6ff", acc:"galaxy"},
+  {id:"phantom", name:"Phantom Rex",  cost:42000, body:"#6a7a9a", dark:"#37425a", belly:"#cdd8ee", acc:"shades"},
+  {id:"titan",   name:"Titan Rex",    cost:50000, body:"#c9a23a", dark:"#7a5e16", belly:"#ffe9a6", acc:"horns"},
+  {id:"celestial",name:"Celestial Rex",cost:65000,body:"#bfeaff", dark:"#5a9fd0", belly:"#ffffff", acc:"diamond"},
+  {id:"voidrex", name:"Void Rex",     cost:88000, body:"#160a2e", dark:"#0a0518", belly:"#7a5ad0", acc:"galaxy"},
+  // ----- 🎖 battle-pass EXCLUSIVE skins (earned through the pass, never bought) -----
+  {id:"pass_leaf",   name:"Kush Lord",   cost:0, pass:true, body:"#39c25a", dark:"#1f7a34", belly:"#d6ffb0", acc:"rasta"},
+  {id:"pass_gold",   name:"24K Rex",     cost:0, pass:true, body:"#ffcf2e", dark:"#b8901c", belly:"#fff4c0", acc:"crown"},
+  {id:"pass_cyber",  name:"Neon Outlaw", cost:0, pass:true, body:"#15e0d0", dark:"#0a8c82", belly:"#b6fff7", acc:"cyber"},
+  {id:"pass_inferno",name:"Inferno Rex", cost:0, pass:true, body:"#ff3a1a", dark:"#8c1a0a", belly:"#ffae6a", acc:"devil"},
+  {id:"pass_frost",  name:"Glacier Rex", cost:0, pass:true, body:"#7fe0ff", dark:"#2f8fc4", belly:"#eaffff", acc:"ice"},
+  {id:"pass_legend", name:"Legend Rex",  cost:0, pass:true, body:"#e9d6ff", dark:"#7a52c4", belly:"#ffffff", acc:"diamond"},
 ];
 const skinById = (id)=> SKINS.find(s=>s.id===id) || SKINS[0];
 // ---- top-tier "chromatic" skins: metallic base + animated shimmer band (distinct from flat 'rainbow') ----
-const CHROMATIC = new Set(["diamond","galaxy","prism","aurora","chrome"]);  // ids that get the shimmer treatment
+const CHROMATIC = new Set(["diamond","galaxy","prism","aurora","chrome","cosmic","celestial","titan","voidrex","pass_legend"]);  // ids that get the shimmer treatment
 const isChromatic = (sk)=> sk && CHROMATIC.has(sk.id);
 // a shimmering metallic fill for a band [x0,y0..x1,y1]; phase animates the light sweep
 function chromaFill(x0,y0,x1,y1,phase,sat=70,lite=58){
@@ -185,6 +210,61 @@ function chromaFill(x0,y0,x1,y1,phase,sat=70,lite=58){
   }
   return g;
 }
+
+// ---------------- 🎖 BATTLE PASS ----------------
+// The more you play (and the better you run), the more XP you bank. Crossing a tier's XP threshold
+// auto-grants its reward forever: free kush 🌿 or an EXCLUSIVE Rex skin you can't buy in the shop.
+// XP per run = 50 just for playing + the run's score, so every single run pushes you forward.
+const PASS_TIERS = [
+  { xp:100,   reward:{kush:50} },
+  { xp:250,   reward:{skin:"pass_leaf"} },
+  { xp:450,   reward:{kush:100} },
+  { xp:700,   reward:{kush:150} },
+  { xp:1000,  reward:{skin:"pass_cyber"} },
+  { xp:1400,  reward:{kush:200} },
+  { xp:1900,  reward:{kush:300} },
+  { xp:2500,  reward:{skin:"pass_gold"} },
+  { xp:3200,  reward:{kush:400} },
+  { xp:4000,  reward:{kush:500} },
+  { xp:5000,  reward:{skin:"pass_frost"} },
+  { xp:6200,  reward:{kush:700} },
+  { xp:7600,  reward:{kush:900} },
+  { xp:9200,  reward:{skin:"pass_inferno"} },
+  { xp:11000, reward:{kush:1200} },
+  { xp:13500, reward:{kush:1600} },
+  { xp:16500, reward:{kush:2000} },
+  { xp:20000, reward:{skin:"pass_legend"} },   // 🏆 final tier — the Legend Rex
+];
+function passXPForRun(runScore){ return 50 + Math.max(0, Math.floor(runScore||0)); }
+function passRewardLabel(r){ return r.skin ? ("🦖 "+skinById(r.skin).name) : ("+"+r.kush+"🌿"); }
+// grant every tier the player's XP now reaches but hasn't claimed yet; returns the freshly-unlocked rewards
+function claimPassRewards(){
+  const out=[];
+  let tier=Math.max(0, Math.min(DB.passTier, PASS_TIERS.length));
+  while (tier < PASS_TIERS.length && DB.passXP >= PASS_TIERS[tier].xp){
+    const r=PASS_TIERS[tier].reward;
+    if (r.kush){ DB.bank = DB.bank + r.kush; }
+    if (r.skin){ const o=DB.owned; if(o.indexOf(r.skin)<0){ o.push(r.skin); DB.owned=o; } }
+    out.push({tier:tier+1, reward:r});
+    tier++;
+  }
+  DB.passTier = tier;
+  return out;
+}
+// add XP for a finished run and bank any rewards it unlocked
+function addPassProgress(runScore){
+  DB.passXP = DB.passXP + passXPForRun(runScore);
+  return claimPassRewards();
+}
+// progress info for the UI: current claimed tier, the next tier, and the bar fraction toward it
+function passProgress(){
+  const xp=DB.passXP, claimed=Math.max(0, Math.min(DB.passTier, PASS_TIERS.length));
+  if (claimed>=PASS_TIERS.length) return { xp, claimed, done:true, frac:1, next:null, base:PASS_TIERS[PASS_TIERS.length-1].xp, target:PASS_TIERS[PASS_TIERS.length-1].xp };
+  const base = claimed>0 ? PASS_TIERS[claimed-1].xp : 0;
+  const target = PASS_TIERS[claimed].xp;
+  return { xp, claimed, done:false, frac:clamp((xp-base)/Math.max(1,target-base),0,1), next:PASS_TIERS[claimed], base, target };
+}
+let lastPassUnlocks=[];   // rewards unlocked on the most recent run — shown on the game-over screen
 
 // ---------------- leaderboard ----------------
 // Works per-device out of the box. To make the list GLOBAL (shared by everyone
@@ -231,6 +311,10 @@ function fmtCountdown(ms){
   const totMin=Math.floor(ms/60000), d=Math.floor(totMin/1440), h=Math.floor((totMin%1440)/60), m=totMin%60;
   return d+"d "+h+"h "+m+"m";
 }
+// human-facing season number (the weekly board went live mid-life, so internal index 1 = "SEASON 2")
+const SEASON_NUM_OFFSET = 1;
+function seasonLabel(){ return currentSeason() + SEASON_NUM_OFFSET; }
+const LAST_WINNER = "SEM";   // champion of the previous season — celebrated at startup
 // timed fetch — aborts a hung/slow Pantry after `ms` so a finish can never block for minutes
 // (live-probed: Pantry can hang 60-90s). A timed-out call rejects fast so the retry/queue logic proceeds.
 async function fetchT(url, opts, ms){
@@ -252,7 +336,7 @@ async function fetchT(url, opts, ms){
 //      https://kush-rush-default-rtdb.europe-west1.firebasedatabase.app ) and paste it into CLOUD.FB below.
 // Empty CLOUD.FB ⇒ Pantry-only (exactly the old behaviour, no regression).
 const CLOUD = {
-  FB: "",   // ← paste your Firebase Realtime Database URL here to migrate off Pantry
+  FB: "https://kush-rush-864ed-default-rtdb.europe-west1.firebasedatabase.app",   // PRIMARY backend (Pantry is now only the fallback)
   pantryId: BOARD.pantryId,
   paths: { scores:"maria_trex_scores", stats:"maria_trex_stats", profiles:"maria_trex_profiles" },
   hasPrimary(){ return typeof this.FB==="string" && this.FB.length>10; },
@@ -518,9 +602,11 @@ const Profile = {
       pet:     (over.pet!=null ? !!over.pet : !!base.pet),
       best:    Math.max(Math.floor(Number(base.best)||0),     Math.floor(Number(over.best)||0)),
       bestDist:Math.max(Math.floor(Number(base.bestDist)||0), Math.floor(Number(over.bestDist)||0)),
+      passXP:  Math.max(Math.floor(Number(base.passXP)||0),   Math.floor(Number(over.passXP)||0)),
+      passTier:Math.max(Math.floor(Number(base.passTier)||0), Math.floor(Number(over.passTier)||0)),
     };
   },
-  fromDB(){ return { bank:DB.bank, owned:DB.owned, skin:DB.skin, pet:DB.pet, best:DB.best, bestDist:DB.bestDist }; },
+  fromDB(){ return { bank:DB.bank, owned:DB.owned, skin:DB.skin, pet:DB.pet, best:DB.best, bestDist:DB.bestDist, passXP:DB.passXP, passTier:DB.passTier }; },
   applyToDB(p){
     if (!p) return;
     if (Array.isArray(p.owned)) DB.owned = Array.from(new Set(["classic", ...p.owned].filter(Boolean)));
@@ -531,6 +617,8 @@ const Profile = {
     if (p.bank!=null){ DB.bank = Math.max(0, Math.floor(Number(p.bank)||0)); Profile.syncedBank = DB.bank; }  // cloud value last reconciled (delta anchor)
     if (p.best!=null     && Number(p.best)>DB.best)         DB.best     = Math.floor(Number(p.best));
     if (p.bestDist!=null && Number(p.bestDist)>DB.bestDist) DB.bestDist = Math.floor(Number(p.bestDist));
+    if (p.passXP!=null   && Number(p.passXP)>DB.passXP)     DB.passXP   = Math.floor(Number(p.passXP));     // battle-pass progress is monotonic across devices
+    if (p.passTier!=null && Number(p.passTier)>DB.passTier) DB.passTier = Math.floor(Number(p.passTier));   // already-claimed tiers (rewards arrive via owned/bank sync)
     if (DB.owned.indexOf(DB.skin)<0) DB.skin = DB.owned[DB.owned.length-1] || "classic"; // keep equipped valid
   },
   async readBasket(){
@@ -610,7 +698,7 @@ function setKey(k,v){
     if (k==="p") togglePause();
     if (k==="enter") onConfirm();
     if (k==="s" && (G.scene==="title")) openShop();
-    if (k==="escape" && G.scene==="shop") G.scene="title";
+    if (k==="escape" && (G.scene==="shop"||G.scene==="pass")) G.scene="title";
     if (k==="escape" && G.scene==="howto") leaveHowto();
     if (k==="escape" && G.scene==="guide") closeGuide();
     if (k==="escape" && (G.scene==="play"||G.scene==="paused")) quitToMenu();
@@ -783,7 +871,7 @@ function onConfirm(){
   if (G.scene==="howto"){ leaveHowto(); return; }
   if (G.scene==="guide"){ closeGuide(); return; }
   if (G.scene==="title"||G.scene==="over") startGame();
-  else if (G.scene==="shop") G.scene="title";
+  else if (G.scene==="shop"||G.scene==="pass") G.scene="title";
 }
 function openShop(){ G.scene="shop"; }
 
@@ -1540,6 +1628,7 @@ function bankAndSubmit(){
   DB.bank = DB.bank + score;             // bank this run's kush for the shop
   if (score>DB.best) DB.best=score;
   if (distance>DB.bestDist) DB.bestDist=distance;
+  lastPassUnlocks = addPassProgress(score);   // 🎖 battle-pass XP for this run + auto-grant any newly-unlocked tier rewards (kush/skins added to DB before the save below)
   const nm = Profile.key(DB.name) || "PLAYER";
   // serialize the 3 cloud writes (SCORE first) so a single free Pantry account isn't slammed by ~17 concurrent requests
   Board.submit({ name:nm, score:Math.floor(score), dist:Math.floor(distance), hidden:Math.floor(hidden), ts:Date.now() })
@@ -1617,6 +1706,7 @@ function render(){
   else if (G.scene==="guide") drawGuide();
   else if (G.scene==="title") drawTitle();
   else if (G.scene==="shop") drawShop();
+  else if (G.scene==="pass") drawPass();
   else if (G.scene==="over") drawGameOver();
   else if (G.scene==="paused") drawPaused();
   if (G.scene==="play") drawMenuButton();
@@ -2517,27 +2607,70 @@ function drawLogo(cx, cy, s, t){
 // ===================== intro splash =====================
 let introT = 0;
 const easeOutBack=(x)=>{ const c=2.2; return 1+ (c+1)*Math.pow(x-1,3)+c*Math.pow(x-1,2); };
+let introBurst=[];   // firework particles for the intro
 function drawIntro(){
-  const g=ctx.createLinearGradient(0,0,0,VH); g.addColorStop(0,"#0a2114"); g.addColorStop(.6,"#06120b"); g.addColorStop(1,"#030704");
+  const T=introT;
+  // 1) pulsing, colour-cycling background
+  const hueA=(T*1.5)%360;
+  const g=ctx.createLinearGradient(0,0,VW,VH);
+  g.addColorStop(0,   `hsl(${hueA} 70% 7%)`);
+  g.addColorStop(0.5, `hsl(${(hueA+50)%360} 80% 5%)`);
+  g.addColorStop(1,   `hsl(${(hueA+120)%360} 70% 6%)`);
   ctx.fillStyle=g; ctx.fillRect(0,0,VW,VH);
-  // searchlights
-  ctx.save(); ctx.globalAlpha=0.12;
-  for(let i=0;i<3;i++){ const a=Math.sin(introT*0.02+i*2)*0.5; ctx.fillStyle=i?"#7CFC6A":"#ffd54a";
-    ctx.beginPath(); ctx.moveTo(VW/2,VH+40); ctx.lineTo(VW/2+Math.cos(a-1.6)*900, -40); ctx.lineTo(VW/2+Math.cos(a-1.4)*900,-40); ctx.closePath(); ctx.fill(); }
+  // 2) rotating radial light rays from centre (additive)
+  ctx.save(); ctx.translate(VW/2,VH/2); ctx.rotate(T*0.01); ctx.globalAlpha=0.06; ctx.globalCompositeOperation="lighter";
+  for(let i=0;i<18;i++){ ctx.rotate(Math.PI*2/18); ctx.fillStyle=i%2?"#7CFC6A":"#ffd54a";
+    ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(960,-72); ctx.lineTo(960,72); ctx.closePath(); ctx.fill(); }
   ctx.restore();
-  // falling kush leaves
-  for(let i=0;i<22;i++){ const x=((i*149 + introT*1.2)%(VW+60))-30; const y=((i*83 + introT*2.4)%(VH+60))-30;
-    ctx.save(); ctx.translate(x,y); ctx.rotate(introT*0.03+i); ctx.globalAlpha=0.5; ctx.scale(0.5,0.5); drawLeaf7(); ctx.restore(); }
-  // logo slam-in (scaled to fit the screen width)
-  const appear=clamp(introT/34,0,1);
-  const sc=Math.min(1, VW/620)*easeOutBack(appear);
-  const a=clamp(introT/16,0,1);
-  ctx.save(); ctx.globalAlpha=a; drawLogo(VW/2, VH/2-26, Math.max(0.05,sc), introT); ctx.restore();
-  if (introT>40){ ctx.globalAlpha=clamp((introT-40)/24,0,1); ctx.textAlign="center";
-    ctx.fillStyle="#cfe0ff"; ctx.font="bold 18px 'Trebuchet MS'"; ctx.fillText("KUALA LUMPUR · MOST WANTED", VW/2, VH/2+118); ctx.globalAlpha=1; }
-  if (introT>78){ ctx.globalAlpha=0.55+0.45*Math.sin(introT*0.16); ctx.textAlign="center";
-    ctx.fillStyle="#fff"; ctx.font="bold 16px 'Trebuchet MS'"; ctx.fillText("tap / press ENTER", VW/2, VH-46); ctx.globalAlpha=1; ctx.textAlign="left"; }
-  if (introT>250) leaveIntro();
+  // 3) sweeping searchlights
+  ctx.save(); ctx.globalAlpha=0.10; ctx.globalCompositeOperation="lighter";
+  for(let i=0;i<4;i++){ const a=Math.sin(T*0.025+i*1.7)*0.6; ctx.fillStyle=i%2?"#7CFC6A":"#42e8ff";
+    ctx.beginPath(); ctx.moveTo(VW/2,VH+60); ctx.lineTo(VW/2+Math.cos(a-1.6)*1000,-60); ctx.lineTo(VW/2+Math.cos(a-1.34)*1000,-60); ctx.closePath(); ctx.fill(); }
+  ctx.restore();
+  // 4) swirling, pulsing kush leaves
+  for(let i=0;i<30;i++){ const x=((i*97 + T*1.6)%(VW+80))-40, y=((i*131 + T*3.0)%(VH+80))-40;
+    ctx.save(); ctx.translate(x,y); ctx.rotate(T*0.05+i); ctx.globalAlpha=0.42; const s=0.4+0.2*Math.sin(T*0.12+i); ctx.scale(s,s); drawLeaf7(); ctx.restore(); }
+  // 5) neon confetti rain
+  ctx.save();
+  for(let i=0;i<46;i++){ const x=((i*173 + T*4)%(VW+40))-20, y=((i*61 + T*6.5)%(VH+40))-20;
+    ctx.globalAlpha=0.62; ctx.fillStyle=`hsl(${(i*43+T*5)%360} 90% 62%)`;
+    ctx.save(); ctx.translate(x,y); ctx.rotate(i+T*0.1); ctx.fillRect(-2,-4,4,8); ctx.restore(); }
+  ctx.restore();
+  // 6) firework bursts
+  if (T>20 && T%24===0 && T<230){ const bx=70+((T*131)%Math.max(40,VW-140)), by=70+((T*71)%Math.max(40,VH*0.5));
+    for(let k=0;k<24;k++){ const a=k/24*6.283, sp=2+(k%5)*0.6; introBurst.push({x:bx,y:by,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,life:34,h:(T*7)%360}); } }
+  ctx.save(); ctx.globalCompositeOperation="lighter";
+  for(let i=introBurst.length-1;i>=0;i--){ const p=introBurst[i]; p.x+=p.vx; p.y+=p.vy; p.vy+=0.05; p.life--;
+    if(p.life<=0){ introBurst.splice(i,1); continue; }
+    ctx.globalAlpha=clamp(p.life/34,0,1); ctx.fillStyle=`hsl(${p.h} 90% 64%)`; ctx.beginPath(); ctx.arc(p.x,p.y,2.6,0,6.283); ctx.fill(); }
+  ctx.restore(); ctx.globalAlpha=1;
+  // 7) logo SLAM with glow + jitter + wobble
+  const appear=clamp(T/30,0,1), sc=Math.min(1,VW/600)*easeOutBack(appear);
+  if (T===30) screenShakeAdd(20);
+  ctx.save();
+  const jit=T<42?6:1.2; ctx.translate(VW/2+(Math.random()*2-1)*jit, VH/2-46+(Math.random()*2-1)*jit);
+  ctx.rotate(Math.sin(T*0.18)*0.03);
+  ctx.shadowColor="#7CFC6A"; ctx.shadowBlur=22+14*Math.sin(T*0.22);
+  ctx.globalAlpha=clamp(T/16,0,1);
+  drawLogo(0,0, Math.max(0.05,sc), T);
+  ctx.restore(); ctx.shadowBlur=0; ctx.globalAlpha=1;
+  // 8) ⚡ SEASON N HAS STARTED — slam-in rainbow banner
+  if (T>44){ const a=clamp((T-44)/18,0,1), pop=easeOutBack(a);
+    ctx.save(); ctx.translate(VW/2, VH/2+46); ctx.scale(pop,pop); ctx.textAlign="center";
+    ctx.shadowColor="#000"; ctx.shadowBlur=10; ctx.fillStyle=`hsl(${(T*6)%360} 95% 60%)`; ctx.font="bold 28px 'Trebuchet MS'";
+    ctx.fillText("⚡ SEASON "+seasonLabel()+" HAS STARTED ⚡", 0, 0); ctx.restore(); ctx.shadowBlur=0; }
+  // 9) 👑 last-season champion praise
+  if (T>64){ const a=clamp((T-64)/18,0,1); ctx.save(); ctx.globalAlpha=a; ctx.textAlign="center"; const yy=VH/2+88;
+    ctx.fillStyle="#ffd54a"; ctx.font="bold 16px 'Trebuchet MS'"; ctx.fillText("👑  LAST SEASON CHAMPION  👑", VW/2, yy);
+    ctx.shadowColor="#ffd54a"; ctx.shadowBlur=14+8*Math.sin(T*0.2); ctx.fillStyle="#fff"; ctx.font="bold 30px 'Trebuchet MS'";
+    ctx.fillText(LAST_WINNER+"  🏆", VW/2, yy+32); ctx.shadowBlur=0;
+    ctx.fillStyle="#9fe89f"; ctx.font="13px 'Trebuchet MS'"; ctx.fillText("the Kush King — dethrone them this season!", VW/2, yy+54);
+    ctx.restore(); }
+  // 10) tap prompt
+  if (T>92){ ctx.save(); ctx.globalAlpha=0.55+0.45*Math.sin(T*0.16); ctx.textAlign="center";
+    ctx.fillStyle="#fff"; ctx.font="bold 16px 'Trebuchet MS'"; ctx.fillText("tap / press ENTER to play", VW/2, VH-26); ctx.restore(); }
+  ctx.textAlign="left"; ctx.globalAlpha=1;
+  if (T>330) leaveIntro();
 }
 
 // ===== first-launch onboarding: how to get TRUE fullscreen + best rotation =====
@@ -2831,7 +2964,8 @@ function drawTitle(){
     const sk=curSkin(); ctx.fillStyle="#9fb4d6"; ctx.font="12px 'Trebuchet MS'"; ctx.fillText("Skin: "+sk.name+" · Best: "+DB.best+"🌿", Lcx, 300);
     ctx.textAlign="left";
     button(Lx, 318, colW, 48, "▶  PLAY", ()=>startGame());
-    button(Lx, 372, colW, 38, "🛍  KUSH SHOP", ()=>openShop(), "rgba(255,213,74,.18)");
+    button(Lx, 372, colW/2-4, 38, "🛍  SHOP", ()=>openShop(), "rgba(255,213,74,.18)");
+    button(Lx+colW/2+4, 372, colW/2-4, 38, "🎖  PASS", ()=>openPass(), "rgba(201,160,255,.20)");
     button(Lx, 416, colW, 38, "📖  HOW TO PLAY", ()=>openGuide("title"), "rgba(88,166,255,.18)");
     ctx.textAlign="center"; ctx.fillStyle="#8298ba"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText("← → run · SPACE jump · F shoot", Lcx, 470);
     linkText("ℹ️  How to play fullscreen", Lcx, 494, ()=>{ G.scene="howto"; });
@@ -2845,7 +2979,8 @@ function drawTitle(){
     ctx.fillStyle=nameCol; ctx.font="bold 13px 'Trebuchet MS'"; ctx.textAlign="center"; ctx.fillText(empty?"ENTER YOUR NAME ↓":"YOUR NAME", cx, 160);
     ctx.textAlign="left";
     button(ix, 226, iw, 42, "▶  PLAY", ()=>startGame());
-    button(ix, 272, iw, 36, "🛍  KUSH SHOP", ()=>openShop(), "rgba(255,213,74,.18)");
+    button(ix, 272, iw/2-4, 36, "🛍  SHOP", ()=>openShop(), "rgba(255,213,74,.18)");
+    button(ix+iw/2+4, 272, iw/2-4, 36, "🎖  PASS", ()=>openPass(), "rgba(201,160,255,.20)");
     button(ix, 312, iw, 36, "📖  HOW TO PLAY", ()=>openGuide("title"), "rgba(88,166,255,.18)");
     ctx.textAlign="center"; ctx.fillStyle="#ffd54a"; ctx.font="bold 15px 'Trebuchet MS'"; ctx.fillText("🏆 HIGH SCORES", cx, 368);
     ctx.fillStyle="#8fa6c8"; ctx.font="10px 'Trebuchet MS'"; ctx.fillText(Board.statusLine()+" · 🎮 "+fmtInt(Stats.display())+" runs", cx, 381);
@@ -2903,6 +3038,7 @@ function drawShop(){
     let label,c2;
     if (isSel){ label="EQUIPPED"; c2="#7CFC6A"; }
     else if (isOwned){ label="EQUIP"; c2="#cfe0ff"; }
+    else if (s.pass){ label="🎖 BATTLE PASS"; c2="#c9a0ff"; }                    // earned through the pass, never bought
     else { label=(DB.bank>=s.cost?"BUY · ":"NEED ")+s.cost+" 🌿"; c2=DB.bank>=s.cost?"#ffd54a":"#ff8a8a"; }
     ctx.fillStyle=c2; ctx.font="bold 13px 'Trebuchet MS'"; ctx.fillText(label,cxp+cw/2,cyp+103);
     ctx.textAlign="left";
@@ -2933,6 +3069,7 @@ function drawSkinPreview(s,cx,cy){
 function buyOrEquip(s){
   const owned=DB.owned;
   if (owned.includes(s.id)){ DB.skin=s.id; sfx.collect(); Profile.save(); return; }
+  if (s.pass){ sfx.hurt(); flash=6; return; }            // battle-pass exclusive → unlock it by climbing the pass, not buying
   if (DB.bank>=s.cost){ DB.bank=DB.bank-s.cost; owned.push(s.id); DB.owned=owned; DB.skin=s.id; sfx.star(); Profile.save(); }
   else { sfx.hurt(); flash=6; }
 }
@@ -2940,6 +3077,46 @@ function buyPet(pet){
   if (DB.pet){ sfx.collect(); return; }                 // already owned → always equipped
   if (DB.bank>=pet.cost){ DB.bank=DB.bank-pet.cost; DB.pet=true; sfx.star(); Profile.save(); }
   else { sfx.hurt(); flash=6; }
+}
+function openPass(){ G.scene="pass"; }
+// 🎖 battle-pass screen: progress bar to the next tier + the full reward ladder
+function drawPass(){
+  ctx.fillStyle="rgba(8,6,18,.88)"; ctx.fillRect(0,0,VW,VH);
+  const w=Math.min(VW-16,900), x0=VW/2-w/2, cx=VW/2;
+  panel(x0,16,w,VH-32,"rgba(201,160,255,.55)");
+  drawSoundButton(x0+12,24,34,28);
+  ctx.textAlign="center"; ctx.fillStyle="#c9a0ff"; ctx.font="bold 24px 'Trebuchet MS'"; ctx.fillText("🎖  BATTLE PASS",cx,44);
+  const pp=passProgress();
+  ctx.fillStyle="#fff"; ctx.font="13px 'Trebuchet MS'";
+  ctx.fillText("Season "+seasonLabel()+"   ·   Tier "+pp.claimed+"/"+PASS_TIERS.length+"   ·   "+fmtInt(DB.passXP)+" XP", cx, 64);
+  // progress bar toward the next tier
+  const bx=x0+30, bw=w-60, by=76, bh=14;
+  ctx.fillStyle="rgba(255,255,255,.10)"; roundRect(bx,by,bw,bh,7); ctx.fill();
+  const grad=ctx.createLinearGradient(bx,0,bx+bw,0); grad.addColorStop(0,"#7a52c4"); grad.addColorStop(1,"#c9a0ff");
+  ctx.fillStyle=grad; roundRect(bx,by,Math.max(6,bw*pp.frac),bh,7); ctx.fill();
+  ctx.fillStyle="#dfe9ff"; ctx.font="11px 'Trebuchet MS'";
+  ctx.fillText(pp.done? "🏆 PASS COMPLETE — every tier unlocked!" : ("Next: "+passRewardLabel(pp.next.reward)+"   ·   "+fmtInt(Math.max(0,pp.target-DB.passXP))+" XP to go"), cx, by+bh+15);
+  // reward ladder (auto-fit grid, single line per tier)
+  const gap=8, top=118, inner=w-32, startX=x0+16, bottom=VH-58;
+  const cols=Math.max(2, Math.min(3, Math.floor((inner+gap)/(230+gap))));
+  const cw=Math.floor((inner-(cols-1)*gap)/cols), rows=Math.ceil(PASS_TIERS.length/cols);
+  const chh=Math.max(22, Math.min(38, Math.floor((bottom-top-(rows-1)*gap)/rows)));
+  ctx.textAlign="left";
+  for(let i=0;i<PASS_TIERS.length;i++){
+    const col=i%cols, row=Math.floor(i/cols), xx=startX+col*(cw+gap), yy=top+row*(chh+gap);
+    const claimed=i<pp.claimed, current=(i===pp.claimed && !pp.done), r=PASS_TIERS[i].reward;
+    ctx.fillStyle= claimed?"rgba(124,252,106,.15)": current?"rgba(255,213,74,.16)":"rgba(255,255,255,.05)";
+    roundRect(xx,yy,cw,chh,7); ctx.fill();
+    ctx.strokeStyle= claimed?"#7CFC6A": current?"#ffd54a":"rgba(201,160,255,.4)"; ctx.lineWidth=1.5; roundRect(xx,yy,cw,chh,7); ctx.stroke();
+    ctx.textAlign="left"; ctx.fillStyle=claimed?"#9fe89f":current?"#ffd54a":"#cdb8ff"; ctx.font="bold 12px 'Trebuchet MS'";
+    ctx.fillText((claimed?"✔":current?"▶":"🔒")+" T"+(i+1), xx+8, yy+chh/2+4);
+    ctx.textAlign="right"; ctx.fillStyle=r.skin?"#e6d0ff":"#fff"; ctx.font="bold 12px 'Trebuchet MS'";
+    ctx.fillText(r.skin? ("🦖 "+skinById(r.skin).name) : ("+"+r.kush+" 🌿"), xx+cw-8, yy+chh/2+4);
+    ctx.textAlign="left";
+  }
+  ctx.textAlign="center"; ctx.fillStyle="#9fb4d6"; ctx.font="11px 'Trebuchet MS'";
+  ctx.fillText("every run earns XP (50 + your kush 🌿) — keep playing to climb the pass!", cx, VH-46);
+  button(cx-44, VH-38, 88, 30, "BACK", ()=>{G.scene="title";}, "rgba(255,255,255,.14)");
 }
 
 function drawGameOver(){
@@ -2951,6 +3128,11 @@ function drawGameOver(){
   const hanged=overReason==="hanged";
   ctx.fillStyle="#ff7b7b"; ctx.font="bold 36px 'Trebuchet MS'";
   ctx.fillText(hanged?"HANGED!":(overReason==="lava"?"BURNED!":(overReason==="fell"?"WIPEOUT!":"BUSTED!")),cx,104);
+  if (lastPassUnlocks && lastPassUnlocks.length){                 // 🎖 celebrate any battle-pass tier unlocked this run
+    const u=lastPassUnlocks[lastPassUnlocks.length-1];
+    ctx.fillStyle="#c9a0ff"; ctx.font="bold 15px 'Trebuchet MS'";
+    ctx.fillText("🎖 BATTLE PASS TIER "+u.tier+"!  "+passRewardLabel(u.reward), cx, 124);
+  }
   // run summary: kush · distance · TOTAL points (yellow), auto-shrunk to fit
   {
     const total=Math.round(Board.rankVal({score:score,dist:distance,hidden:hidden}));
@@ -2963,7 +3145,7 @@ function drawGameOver(){
     ctx.fillStyle="#ffd54a"; ctx.fillText(b, xs+wa, 140);
     ctx.textAlign="center";
   }
-  ctx.fillStyle="#9fe89f"; ctx.font="13px 'Trebuchet MS'"; ctx.fillText(`+${score}🌿 banked · Bank ${DB.bank}`,cx,164);
+  ctx.fillStyle="#9fe89f"; ctx.font="13px 'Trebuchet MS'"; ctx.fillText(`+${score}🌿 · 🎖 +${passXPForRun(score)} XP · Bank ${DB.bank}`,cx,164);
   const nb=(score>=DB.best&&score>0)?"NEW BEST! ":"";
   ctx.fillStyle="#ffd54a"; ctx.font="13px 'Trebuchet MS'"; ctx.fillText(`${nb}Best ${DB.best}🌿 · ${DB.bestDist} m`,cx,184);
   const rank=Board.rankOf(Board.lastName);
