@@ -240,10 +240,49 @@ async function fetchT(url, opts, ms){
   try{ return await fetch(url, ac ? Object.assign({}, opts||{}, {signal:ac.signal}) : (opts||{})); }
   finally{ if(t) clearTimeout(t); }
 }
+// ---------------- cloud storage: a sturdier PRIMARY + Pantry FALLBACK ----------------
+// Pantry was the only backend and it kept going offline. We now read/write a sturdier PRIMARY
+// first and only fall back to Pantry if the primary is unreachable — so the leaderboard survives
+// either provider going down. Each shared document (scores / stats / profiles) is one JSON value.
+//
+// PRIMARY = Firebase Realtime Database (free, rock-solid, browser-CORS-correct). To turn it on:
+//   1. console.firebase.google.com → Add project (any name, e.g. "kush-rush").
+//   2. Build → Realtime Database → Create database → Start in TEST mode (public read/write).
+//   3. Copy the database URL shown at the top (looks like
+//      https://kush-rush-default-rtdb.europe-west1.firebasedatabase.app ) and paste it into CLOUD.FB below.
+// Empty CLOUD.FB ⇒ Pantry-only (exactly the old behaviour, no regression).
+const CLOUD = {
+  FB: "",   // ← paste your Firebase Realtime Database URL here to migrate off Pantry
+  pantryId: BOARD.pantryId,
+  paths: { scores:"maria_trex_scores", stats:"maria_trex_stats", profiles:"maria_trex_profiles" },
+  hasPrimary(){ return typeof this.FB==="string" && this.FB.length>10; },
+  configured(){ return this.hasPrimary() || (this.pantryId && this.pantryId.length>10); },
+  fbUrl(doc){ return this.FB.replace(/\/+$/,"")+"/"+this.paths[doc]+".json"; },
+  pantryUrl(doc){ return "https://getpantry.cloud/apiv1/pantry/"+this.pantryId+"/basket/"+this.paths[doc]; },
+  // read a document: PRIMARY first (skip if it has no data yet), else Pantry. null = BOTH unreachable.
+  async read(doc){
+    if (this.hasPrimary()){
+      try{ const r=await fetchT(this.fbUrl(doc),{cache:"no-store"}); if(r.ok){ const d=await r.json(); if(d!==null && d!==undefined) return d; } }catch(e){}
+    }
+    return await this.readPantry(doc);
+  },
+  // explicit single-backend reads (used by the one-time Pantry→primary migration)
+  async readPantry(doc){
+    try{ const r=await fetchT(this.pantryUrl(doc),{cache:"no-store"}); if(r.ok) return await r.json(); if(r.status===400) return {}; }catch(e){}
+    return null;
+  },
+  // write a document: PRIMARY first; only touch Pantry if the primary write fails (keeps the dead-Pantry hang off the hot path).
+  async write(doc, body){
+    if (this.hasPrimary()){
+      try{ const w=await fetchT(this.fbUrl(doc),{ method:"PUT", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body), keepalive:true }, 9000); if(w&&w.ok) return true; }catch(e){}
+    }
+    try{ const w=await fetchT(this.pantryUrl(doc),{ method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body), keepalive:true }, 9000); return !!(w&&w.ok); }catch(e){}
+    return false;
+  },
+};
 const Board = {
   cache: [], status: "local", lastName: "", _flushing:false, _seasons:{},
-  global(){ return BOARD.provider==="pantry" && BOARD.pantryId.length>10; },
-  url(){ return "https://getpantry.cloud/apiv1/pantry/"+BOARD.pantryId+"/basket/"+BOARD.basket; },
+  global(){ return CLOUD.configured(); },
   localAll(){ try{ return JSON.parse(localStorage.getItem("maria_scores")||"[]"); }catch(e){ return []; } },
   localSet(a){ try{ localStorage.setItem("maria_scores", JSON.stringify(a)); }catch(e){} },
   localCurrent(){ return this.localAll(); },                          // ALL-TIME board: keep every local score (never purge by season)
@@ -300,23 +339,59 @@ const Board = {
     return q ? ("🌐 shared · uploading "+q+"…") : "🌐 shared with everyone";
   },
   rankOf(name){ if(!name) return -1; return this.cache.findIndex(r=>r.name===name); },
-  // rebuild the visible all-time board from a remote payload (may be null) + everything we still hold locally
+  // scores shown on the competitive board = current season ∪ previous season — last season carries over
+  // until THIS season ends (Sunday 21:00). Older seasons stay ARCHIVED in the payload (kept, never deleted).
+  seasonBoard(payload){
+    const cur=currentSeason();
+    const pool=(payload&&Array.isArray(payload.scores)) ? payload.scores.slice() : [];          // current live scores
+    const ss=(payload&&payload.seasons)||this._seasons||{};
+    for (const k of [String(cur), String(cur-1)]) if (Array.isArray(ss[k])) for(const e of ss[k]) pool.push(e);  // this + last season's archive
+    for (const e of this.localAll().concat(this.pendingAll())){                                  // our own runs (incl. offline) from this or last season
+      const s=(e&&e.season==null) ? cur : (Number(e&&e.season)||0);
+      if (s>=cur-1) pool.push(e);
+    }
+    return this.normalize(pool);
+  },
+  // rebuild the visible (season) board from a remote payload (may be null) + everything we still hold locally
   rebuild(payload){
     if (payload && payload.seasons) this._seasons=payload.seasons;
-    const remoteFlat = this.flatten(payload || {scores:[], seasons:this._seasons});
-    this.cache=this.normalize(remoteFlat.concat(this.localAll(), this.pendingAll()));
+    this.cache=this.seasonBoard(payload || {scores:[], seasons:this._seasons});
   },
   init(){
     this.rebuild(null);
-    if (this.global()){ this.status="loading"; this.refresh(); }
+    if (this.global()){ this.status="loading"; this.refresh(); this.importFromPantryOnce(); }
+  },
+  // ONE-TIME migration: the first time Pantry is reachable AFTER a sturdier primary is configured, copy
+  // everything Pantry still holds (scores + play-count + profiles) into the primary, then never run again.
+  async importFromPantryOnce(){
+    try{
+      if (!CLOUD.hasPrimary()) return;                                  // no migration target yet → nothing to do
+      if (localStorage.getItem("maria_pantry_migrated")==="1") return;
+      const sc=await CLOUD.readPantry("scores");
+      if (sc===null) return;                                            // Pantry down → leave flag unset, retry next load
+      try{                                                              // scores → queue any Pantry run we don't hold; the flush writes them to the primary
+        const have=this.localAll().concat(this.pendingAll());
+        for (const e of this.flatten(this.unwrap(sc))) if(!this.remoteHas(have,e)) this.pendingAdd(e);
+      }catch(e){}
+      try{                                                              // play-count → seed the primary to at least Pantry's tally
+        const st=await CLOUD.readPantry("stats"); const p=Math.floor(Number(st&&st.plays)||0);
+        if (p>0){ const c=await CLOUD.read("stats"); if(p>Math.floor(Number(c&&c.plays)||0)) await CLOUD.write("stats",{plays:p}); }
+      }catch(e){}
+      try{                                                              // profiles → copy any NAME the primary is missing (never overwrite the primary's own)
+        const pr=await CLOUD.readPantry("profiles"); const pp=(pr&&pr.profiles&&typeof pr.profiles==="object")?pr.profiles:{};
+        if (Object.keys(pp).length){
+          const c=(await CLOUD.read("profiles"))||{}; const cp=(c.profiles&&typeof c.profiles==="object")?c.profiles:{};
+          let changed=false; for(const k in pp){ if(!(k in cp)){ cp[k]=pp[k]; changed=true; } }
+          if (changed) await CLOUD.write("profiles", Object.assign({}, c, {profiles:cp}));
+        }
+      }catch(e){}
+      localStorage.setItem("maria_pantry_migrated","1");
+      if (this.pendingAll().length) this.flushPending();
+    }catch(e){}
   },
   async readRemote(){
-    try{
-      const r=await fetchT(this.url(),{cache:"no-store"});
-      if(r.ok){ const d=await r.json(); return this.unwrap(d); }
-      if(r.status===400) return this.unwrap({});   // basket not created yet → empty & writable (lets the FIRST score create it)
-    }catch(e){}
-    return null;                                   // timeout / 5xx / 429 → unknown server state, never blind-overwrite
+    const d=await CLOUD.read("scores");
+    return d===null ? null : this.unwrap(d);        // null = all backends unreachable → unknown state, never blind-overwrite
   },
   async refresh(){
     if (!this.global()) return;
@@ -342,10 +417,7 @@ const Board = {
     const scores=this.normalize(((payload&&payload.scores)||[]).concat(curEntries));
     return { scores, season:cur, seasons:this.pruneSeasons(seasons) };
   },
-  async write(body){
-    // keepalive:true lets the browser finish the POST even if the page is closed right after a finish
-    try{ const w=await fetchT(this.url(),{ method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body), keepalive:true }, 9000); return !!(w&&w.ok); }catch(e){ return false; }
-  },
+  async write(body){ return await CLOUD.write("scores", body); },   // primary first, Pantry fallback (keepalive lets a finish complete after the page closes)
   // re-push every queued run the server doesn't have yet; drop from the queue ONLY once a read CONFIRMS it landed
   async flushPending(known){
     if (!this.global() || this._flushing) return;
@@ -395,25 +467,22 @@ const Board = {
 const STATS = { pantryId: BOARD.pantryId, basket: "maria_trex_stats" };
 const Stats = {
   plays: -1,                                                       // global all-time count, -1 = not yet known
-  global(){ return STATS.pantryId && STATS.pantryId.length>10; },
-  url(){ return "https://getpantry.cloud/apiv1/pantry/"+STATS.pantryId+"/basket/"+STATS.basket; },
+  global(){ return CLOUD.configured(); },
   localPlays(){ try{ return Number(localStorage.getItem("maria_plays_local")||0)||0; }catch(e){ return 0; } },
   bumpLocal(){ try{ localStorage.setItem("maria_plays_local", String(this.localPlays()+1)); }catch(e){} },
   display(){ return this.plays>=0 ? this.plays : this.localPlays(); },   // global if synced, else the local tally
   async fetch(){
     if (!this.global()) return;
-    try{ const r=await fetchT(this.url(),{cache:"no-store"}); if(r.ok){ const d=await r.json(); this.plays=Math.max(0,Math.floor(Number(d&&d.plays)||0)); } }catch(e){}
+    const d=await CLOUD.read("stats");
+    if (d){ const p=Math.max(0,Math.floor(Number(d.plays)||0)); this.plays=Math.max(this.plays<0?0:this.plays, p); }   // never let the counter go backwards
   },
   async bump(){
     this.bumpLocal();                                              // always count locally (offline-proof)
     if (!this.global()) return;
-    try{
-      let cur=0;
-      try{ const r=await fetchT(this.url(),{cache:"no-store"}); if(r.ok){ const d=await r.json(); cur=Math.max(0,Math.floor(Number(d&&d.plays)||0)); } }catch(e){}
-      const next=Math.max(cur, this.plays<0?0:this.plays)+1;
-      const w=await fetchT(this.url(),{ method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({plays:next}) });
-      if (w.ok) this.plays=next;
-    }catch(e){}
+    const d=await CLOUD.read("stats");
+    const cur=d ? Math.max(0,Math.floor(Number(d.plays)||0)) : 0;
+    const next=Math.max(cur, this.plays<0?0:this.plays)+1;
+    if (await CLOUD.write("stats",{plays:next})) this.plays=next;
   },
 };
 // 12345 -> "12,345"
@@ -429,8 +498,7 @@ const Profile = {
   loadedName: "",           // name whose profile is currently adopted in DB
   saving: false, dirty: false, syncedBank: 0,
   key(name){ const raw=(name||"").toString().toUpperCase(); const k=raw.replace(/[^A-Z0-9 _-]/g,"").slice(0,10).trim(); return k || raw.trim().slice(0,10); },  // emoji/symbol-only name keeps its own identity instead of folding into "PLAYER"
-  global(){ return PROFILES.pantryId && PROFILES.pantryId.length>10; },
-  url(){ return "https://getpantry.cloud/apiv1/pantry/"+PROFILES.pantryId+"/basket/"+PROFILES.basket; },
+  global(){ return CLOUD.configured(); },
   statusLine(){
     if (!this.global()) return "📱 device only";
     if (this.status==="loading") return "☁️ loading account…";
@@ -466,8 +534,9 @@ const Profile = {
     if (DB.owned.indexOf(DB.skin)<0) DB.skin = DB.owned[DB.owned.length-1] || "classic"; // keep equipped valid
   },
   async readBasket(){
-    try{ const r=await fetchT(this.url(),{cache:"no-store"}); if(r.ok){ const d=await r.json(); return (d&&typeof d==="object")?d:{}; } }catch(e){}
-    return null;   // null = couldn't read (offline / 400 on first-ever basket)
+    const d=await CLOUD.read("profiles");
+    if (d===null) return null;                       // null = couldn't read (all backends offline)
+    return (d&&typeof d==="object")?d:{};
   },
   // ADOPT the remote profile for `name` into DB (local as base, remote as override → no progress lost).
   async load(name){
@@ -501,8 +570,7 @@ const Profile = {
         profiles[k]=merged;
         DB.bank=merged.bank; this.syncedBank=merged.bank;       // re-anchor to what we just persisted
         const body=Object.assign({}, basket||{}, {profiles});   // preserve any sibling top-level keys
-        let ok=false;
-        try{ const w=await fetchT(this.url(),{ method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body) }); ok=w.ok; }catch(e){}
+        let ok=await CLOUD.write("profiles", body);              // primary first, Pantry fallback
         if (ok){
           const after=await this.readBasket();              // verify our slot landed; if raced, retry fresh
           const got=after && after.profiles && after.profiles[k];
@@ -2533,7 +2601,7 @@ const GUIDE_BLOCKS = [
      "You start with 3. You lose one when the cops bust you, a narc or a bullet hits you, or you fall into a pit or lava. Beating the boss earns one back." ]},
   { h:"🏆  POINTS & LEADERBOARD", c:"#9fe89f", body:[
      "Your run total = 66% of your kush 🌿 + 33% of your distance (m) + secret hidden bonuses.",
-     "Kush is banked after every run — spend it in the 🛍 KUSH SHOP on Rex skins and the 🦅 Kush Eagle pet. The global high-score board keeps everyone's best run — your scores never reset." ]},
+     "Kush is banked after every run — spend it in the 🛍 KUSH SHOP on Rex skins and the 🦅 Kush Eagle pet. The high-score board runs a weekly season that resets every Sunday 21:00 — last week's top scores carry over until then, and your banked kush is never lost." ]},
 ];
 
 function drawGuide(){
@@ -2770,7 +2838,7 @@ function drawTitle(){
     ctx.fillStyle="#ffd54a"; ctx.font="bold 18px 'Trebuchet MS'"; ctx.fillText("🏆 HIGH SCORES", Rcx, 192);
     ctx.fillStyle="#8fa6c8"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText(Board.statusLine(), Rcx, 207);
     ctx.fillStyle="#9fe89f"; ctx.font="bold 11px 'Trebuchet MS'"; ctx.fillText("🎮 "+fmtInt(Stats.display())+" runs played worldwide", Rcx, 220);
-    ctx.fillStyle="#7CFC6A"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText("🌿 all-time top "+BOARD.max+" · scores never reset", Rcx, 233);
+    ctx.fillStyle="#ffd54a"; ctx.font="bold 11px 'Trebuchet MS'"; ctx.fillText("🏁 Ends Sun 21:00 · "+fmtCountdown(seasonEndMs()), Rcx, 233);
     drawBoard(Rx+8, 246, colW-16, (VH-42)-246, BOARD.max, null);
   } else {
     const ix=x0+pad, iw=w-2*pad;
@@ -2781,7 +2849,7 @@ function drawTitle(){
     button(ix, 312, iw, 36, "📖  HOW TO PLAY", ()=>openGuide("title"), "rgba(88,166,255,.18)");
     ctx.textAlign="center"; ctx.fillStyle="#ffd54a"; ctx.font="bold 15px 'Trebuchet MS'"; ctx.fillText("🏆 HIGH SCORES", cx, 368);
     ctx.fillStyle="#8fa6c8"; ctx.font="10px 'Trebuchet MS'"; ctx.fillText(Board.statusLine()+" · 🎮 "+fmtInt(Stats.display())+" runs", cx, 381);
-    ctx.fillStyle="#7CFC6A"; ctx.font="bold 10px 'Trebuchet MS'"; ctx.fillText("🌿 all-time top "+BOARD.max+" · never resets", cx, 393);
+    ctx.fillStyle="#ffd54a"; ctx.font="bold 10px 'Trebuchet MS'"; ctx.fillText("🏁 Season ends in "+fmtCountdown(seasonEndMs())+" · Sun 21:00", cx, 393);
     drawBoard(ix+4, 400, iw-8, 94, BOARD.max, null);
     linkText("ℹ️  How to play fullscreen", cx, 508, ()=>{ G.scene="howto"; });
   }
@@ -2900,7 +2968,7 @@ function drawGameOver(){
   ctx.fillStyle="#ffd54a"; ctx.font="13px 'Trebuchet MS'"; ctx.fillText(`${nb}Best ${DB.best}🌿 · ${DB.bestDist} m`,cx,184);
   const rank=Board.rankOf(Board.lastName);
   ctx.fillStyle="#ffd54a"; ctx.font="bold 17px 'Trebuchet MS'"; ctx.fillText("🏆 HIGH SCORES"+(rank>=0?" · #"+(rank+1):""),cx,210);
-  ctx.fillStyle="#8fa6c8"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText(Board.statusLine()+" · 🎮 "+fmtInt(Stats.display())+" runs",cx,226);
+  ctx.fillStyle="#8fa6c8"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText("🏁 "+fmtCountdown(seasonEndMs())+" left · "+Board.statusLine(),cx,226);
   drawBoard(x0+22,238,w-44,152,BOARD.max,Board.lastName);
   ctx.textAlign="left";
   const bw=(w-3*16)/2, bx=x0+16;
