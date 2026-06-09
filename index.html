@@ -365,7 +365,7 @@ const CLOUD = {
   },
 };
 const Board = {
-  cache: [], status: "local", lastName: "", _flushing:false, _seasons:{},
+  cache: [], status: "local", lastName: "", _flushing:false, _seasons:{}, profileBests:null,
   global(){ return CLOUD.configured(); },
   localAll(){ try{ return JSON.parse(localStorage.getItem("maria_scores")||"[]"); }catch(e){ return []; } },
   localSet(a){ try{ localStorage.setItem("maria_scores", JSON.stringify(a)); }catch(e){} },
@@ -418,20 +418,34 @@ const Board = {
     return q ? ("🌐 shared · uploading "+q+"…") : "🌐 shared with everyone";
   },
   rankOf(name){ if(!name) return -1; return this.cache.findIndex(r=>r.name===name); },
-  // the visible board is ALL-TIME: every player's best run across all history + this device's own runs.
+  // the visible board is ALL-TIME: every player's best run + this device's runs + EVERY account's profile-best,
+  // so anyone who has ever played shows up — even if their run-write to the scores doc was lost.
   rebuild(payload){
     const remote=(payload&&Array.isArray(payload.scores))?payload.scores.slice():[];
-    this.cache=this.normalize(remote.concat(this.localAll(), this.pendingAll()));
+    const prof=this.profileBests?Object.values(this.profileBests):[];
+    this.cache=this.normalize(remote.concat(this.localAll(), this.pendingAll(), prof));
   },
-  // make sure THIS device's best runs are on the shared board — so every cross-device play is saved (top 100)
+  // turn every cloud profile (bank/best/bestDist) into a board entry — the reliable per-player "best" store
+  async fetchProfileBests(){
+    try{
+      const d=await CLOUD.read("profiles"); const p=(d&&d.profiles&&typeof d.profiles==="object")?d.profiles:null;
+      if(!p) return this.profileBests;                              // unreadable → keep what we had
+      const out={};
+      for(const name in p){ const pr=p[name]||{}; const best=Math.max(0,Math.floor(Number(pr.best)||0));
+        if(best>0){ const nm=(name||"???").toString().toUpperCase().slice(0,10)||"???";
+          out[nm]={ name:nm, score:best, dist:Math.max(0,Math.floor(Number(pr.bestDist)||0)), hidden:0, ts:Number(pr.ts)||0 }; } }
+      this.profileBests=out; return out;
+    }catch(e){ return this.profileBests; }
+  },
+  // make sure THIS device's runs AND every account's profile-best are on the shared scores doc (so they persist)
   syncLocalUp(payload){
     if (!this.global()) return;
     const known=this.flatten(payload||{}), pend=this.pendingAll();
-    for (const e of this.normalize(this.localAll())){               // this device's best run per name
-      const on=known.find(r=>r.name===e.name);
-      if (on && this.rankVal(on)>=this.rankVal(e)) continue;        // board already holds an equal/better run for this name
-      if (!this.remoteHas(pend, e)) this.pendingAdd(e);             // queue it → flushPending uploads it to the shared board
-    }
+    const queueIfBetter=(e)=>{ const on=known.find(r=>r.name===e.name);
+      if (on && this.rankVal(on)>=this.rankVal(e)) return;          // board already holds an equal/better run for this name
+      if (!this.remoteHas(pend, e)) this.pendingAdd(e); };          // queue it → flushPending uploads it
+    for (const e of this.normalize(this.localAll())) queueIfBetter(e);            // this device's best run per name
+    if (this.profileBests) for (const k in this.profileBests) queueIfBetter(this.profileBests[k]);  // every account's best
   },
   init(){
     this.rebuild(null);
@@ -474,8 +488,9 @@ const Board = {
     const payload=await this.readRemote();
     if (payload===null){ this.status="offline"; this.rebuild(null); return; }  // outage: keep last-good + locals, never blank out
     this.status="online";
+    await this.fetchProfileBests();                                            // pull every account's best so nobody is missing from the board
     this.rebuild(payload);
-    this.syncLocalUp(payload);                                                 // push any of this device's runs the shared board is still missing
+    this.syncLocalUp(payload);                                                 // push this device's runs + every account's best the shared board is missing
     this.flushPending(payload);                                                // upload the pending queue (incl. what syncLocalUp just added)
   },
   // write the ALL-TIME board: merge the server's scores with everyone's runs we hold (local + queued + extra),
