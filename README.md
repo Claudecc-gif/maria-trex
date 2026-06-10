@@ -16,6 +16,8 @@ desert, a volcano and neon nights — grabbing kush and outrunning the Malaysian
 - 🤸 Trampolines fling you sky-high · 💨 bong = speed · ⭐ cali bud = invincible.
 - 🚬 Blow cannon shoots fat joints (max 25) · 👑 beat the **Narco Boss** (he shoots back).
 - 12 unlockable T-Rex skins in the Kush Shop · reggae chiptune soundtrack.
+- 🇲🇾🇳🇱🌍 Pick your country flag on the title screen — it shows next to your name on the leaderboard and in chat.
+- 💬 **Global chat tab** — talk with everyone playing; flip the 💡 FEEDBACK toggle to suggest game changes.
 - Only 3 lives.
 
 ### Controls

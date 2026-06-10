@@ -59,6 +59,14 @@
     box-shadow:0 0 18px rgba(124,252,106,.35); text-transform:uppercase;
   }
   #nameInput::placeholder { color:#6f8f72; font-weight:normal; letter-spacing:.5px; text-transform:none; }
+  #chatInput {
+    position:fixed; display:none; z-index:6; box-sizing:border-box;
+    font-family:"Trebuchet MS",system-ui,sans-serif; text-align:left;
+    border:2px solid #58a6ff; border-radius:10px; outline:none; padding:0 10px;
+    background:rgba(8,12,24,.92); color:#fff;
+    box-shadow:0 0 14px rgba(88,166,255,.30);
+  }
+  #chatInput::placeholder { color:#5d7290; }
   @media (pointer:coarse) { .touch { display:flex; } }
   #iosHint {
     position:fixed; left:50%; top:calc(8px + env(safe-area-inset-top,0px)); transform:translateX(-50%);
@@ -79,6 +87,7 @@
     <div class="btn" id="jumpBtn" data-key="jump">⤒</div>
   </div></div>
   <input id="nameInput" maxlength="10" placeholder="ENTER YOUR NAME" autocomplete="off" spellcheck="false" />
+  <input id="chatInput" maxlength="140" placeholder="Say something…" autocomplete="off" spellcheck="false" />
   <div id="safeTopProbe"></div>
   <div id="iosHint">📲 Fullscreen: tap <b>Share</b> ↑ then <b>Add to Home Screen</b><span class="x">✕</span></div>
 
@@ -153,7 +162,38 @@ const DB = {
   set passXP(v){ localStorage.setItem("maria_passxp", Math.max(0,Math.floor(v))); },
   get passTier(){ return Number(localStorage.getItem("maria_passtier")||0); },       // highest battle-pass tier already CLAIMED
   set passTier(v){ localStorage.setItem("maria_passtier", Math.max(0,Math.floor(v))); },
+  get cc(){ return localStorage.getItem("maria_cc")||""; },                          // country flag: "MY" | "NL" | "WW" (rest of world) | "" = not picked yet
+  set cc(v){ localStorage.setItem("maria_cc", (v||"").toString().toUpperCase().replace(/[^A-Z]/g,"").slice(0,2)); },
 };
+
+// ---------------- country flags (picked on the title screen, shown on the leaderboard + chat) ----------------
+// Drawn as tiny vector flags (not emoji) so they render on every platform — Windows shows
+// flag emojis as plain letters. "WW" = rest of the world (little globe).
+const FLAG_OPTS = [ {cc:"MY", label:"MALAYSIA"}, {cc:"NL", label:"NETHERLANDS"}, {cc:"WW", label:"OTHER"} ];
+function drawFlag(cc, x, y, w, h){
+  if (!cc) return;
+  if (cc==="MY"){
+    const s=h/7;                                            // 14 stripes → 7 readable ones at icon size
+    for (let i=0;i<7;i++){ ctx.fillStyle=i%2===0?"#cc0001":"#ffffff"; ctx.fillRect(x, y+i*s, w, s+0.5); }
+    ctx.fillStyle="#010066"; ctx.fillRect(x, y, w*0.55, s*4);            // canton
+    const mx=x+w*0.21, my=y+s*2, rr=h*0.18;                              // yellow crescent + star-dot
+    ctx.fillStyle="#ffcc00"; ctx.beginPath(); ctx.arc(mx,my,rr,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle="#010066"; ctx.beginPath(); ctx.arc(mx+rr*0.55,my,rr*0.85,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle="#ffcc00"; ctx.beginPath(); ctx.arc(x+w*0.40,my,rr*0.5,0,Math.PI*2); ctx.fill();
+  } else if (cc==="NL"){
+    const s=h/3;
+    ctx.fillStyle="#AE1C28"; ctx.fillRect(x, y,     w, s+0.5);
+    ctx.fillStyle="#ffffff"; ctx.fillRect(x, y+s,   w, s+0.5);
+    ctx.fillStyle="#21468B"; ctx.fillRect(x, y+2*s, w, h-2*s);
+  } else {                                                   // WW / anything else → little globe
+    ctx.fillStyle="#0a2440"; ctx.fillRect(x, y, w, h);
+    ctx.fillStyle="#2e86d6"; ctx.beginPath(); ctx.arc(x+w/2, y+h/2, h*0.42, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle="#43c463";
+    ctx.beginPath(); ctx.arc(x+w*0.42, y+h*0.40, h*0.16, 0, Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x+w*0.60, y+h*0.62, h*0.13, 0, Math.PI*2); ctx.fill();
+  }
+  ctx.strokeStyle="rgba(0,0,0,.55)"; ctx.lineWidth=1; ctx.strokeRect(x+0.5, y+0.5, w-1, h-1);
+}
 
 const SKINS = [
   {id:"classic", name:"Rasta Rex",   cost:0,    body:"#2faa4a", dark:"#1f7a34", belly:"#c4f7a6", acc:"rasta"},
@@ -337,7 +377,7 @@ async function fetchT(url, opts, ms){
 const CLOUD = {
   FB: "https://kush-rush-864ed-default-rtdb.europe-west1.firebasedatabase.app",   // PRIMARY backend (Pantry is now only the fallback)
   pantryId: BOARD.pantryId,
-  paths: { scores:"maria_trex_scores", stats:"maria_trex_stats", profiles:"maria_trex_profiles" },
+  paths: { scores:"maria_trex_scores", stats:"maria_trex_stats", profiles:"maria_trex_profiles", chat:"maria_trex_chat" },
   hasPrimary(){ return typeof this.FB==="string" && this.FB.length>10; },
   configured(){ return this.hasPrimary() || (this.pantryId && this.pantryId.length>10); },
   fbUrl(doc){ return this.FB.replace(/\/+$/,"")+"/"+this.paths[doc]+".json"; },
@@ -403,9 +443,11 @@ const Board = {
     for (const e of (arr||[])){
       if (!e || typeof e.score!=="number" || !isFinite(e.score)) continue;
       const name=(e.name||"???").toString().toUpperCase().slice(0,10) || "???";
-      const ent={ name, score:Math.max(0,Math.floor(e.score)), dist:Math.max(0,Math.floor(e.dist||0)), hidden:Math.max(0,Math.floor(e.hidden||0)), ts:e.ts||0 };
+      const cc=(typeof e.cc==="string") ? e.cc.toUpperCase().replace(/[^A-Z]/g,"").slice(0,2) : "";
+      const ent={ name, cc, score:Math.max(0,Math.floor(e.score)), dist:Math.max(0,Math.floor(e.dist||0)), hidden:Math.max(0,Math.floor(e.hidden||0)), ts:e.ts||0 };
       const cur=best[name];
-      if (!cur || this.rankVal(ent)>this.rankVal(cur)) best[name]=ent;
+      if (!cur || this.rankVal(ent)>this.rankVal(cur)){ if(!ent.cc && cur && cur.cc) ent.cc=cur.cc; best[name]=ent; }   // a flag, once known, sticks to the name
+      else if (!cur.cc && ent.cc) cur.cc=ent.cc;
     }
     return Object.values(best).sort((a,b)=> this.rankVal(b)-this.rankVal(a)).slice(0, BOARD.max);
   },
@@ -432,7 +474,7 @@ const Board = {
       const out={};
       for(const name in p){ const pr=p[name]||{}; const best=Math.max(0,Math.floor(Number(pr.best)||0));
         if(best>0){ const nm=(name||"???").toString().toUpperCase().slice(0,10)||"???";
-          out[nm]={ name:nm, score:best, dist:Math.max(0,Math.floor(Number(pr.bestDist)||0)), hidden:0, ts:Number(pr.ts)||0 }; } }
+          out[nm]={ name:nm, cc:(typeof pr.cc==="string"?pr.cc:""), score:best, dist:Math.max(0,Math.floor(Number(pr.bestDist)||0)), hidden:0, ts:Number(pr.ts)||0 }; } }
       this.profileBests=out; return out;
     }catch(e){ return this.profileBests; }
   },
@@ -596,6 +638,7 @@ const Profile = {
       bank:    Math.max(0, Math.floor(Number(over.bank!=null?over.bank:base.bank)||0)),
       owned,
       skin:    (over.skin||base.skin||"classic"),
+      cc:      ((typeof over.cc==="string"&&over.cc) ? over.cc : (typeof base.cc==="string"?base.cc:"")),
       pet:     (over.pet!=null ? !!over.pet : !!base.pet),
       best:    Math.max(Math.floor(Number(base.best)||0),     Math.floor(Number(over.best)||0)),
       bestDist:Math.max(Math.floor(Number(base.bestDist)||0), Math.floor(Number(over.bestDist)||0)),
@@ -603,7 +646,7 @@ const Profile = {
       passTier:Math.max(Math.floor(Number(base.passTier)||0), Math.floor(Number(over.passTier)||0)),
     };
   },
-  fromDB(){ return { bank:DB.bank, owned:DB.owned, skin:DB.skin, pet:DB.pet, best:DB.best, bestDist:DB.bestDist, passXP:DB.passXP, passTier:DB.passTier }; },
+  fromDB(){ return { bank:DB.bank, owned:DB.owned, skin:DB.skin, cc:DB.cc, pet:DB.pet, best:DB.best, bestDist:DB.bestDist, passXP:DB.passXP, passTier:DB.passTier }; },
   applyToDB(p){
     if (!p) return;
     if (Array.isArray(p.owned)) DB.owned = Array.from(new Set(["classic", ...p.owned].filter(Boolean)));
@@ -611,6 +654,7 @@ const Profile = {
     if (p.skin)        DB.skin = p.skin;
     if (_localSkin && DB.owned.indexOf(_localSkin)>=0) DB.skin = _localSkin;  // keep player's equipped choice if still owned
     if (p.pet!=null)   DB.pet  = !!p.pet;
+    if (typeof p.cc==="string" && p.cc) DB.cc = p.cc;                              // flag follows the account across devices
     if (p.bank!=null){ DB.bank = Math.max(0, Math.floor(Number(p.bank)||0)); Profile.syncedBank = DB.bank; }  // cloud value last reconciled (delta anchor)
     if (p.best!=null     && Number(p.best)>DB.best)         DB.best     = Math.floor(Number(p.best));
     if (p.bestDist!=null && Number(p.bestDist)>DB.bestDist) DB.bestDist = Math.floor(Number(p.bestDist));
@@ -672,6 +716,66 @@ const Profile = {
   },
 };
 
+// ---------------- global chat (💬 tab on the title screen) ----------------
+// One shared room for everyone with the link, plus a 💡 FEEDBACK toggle so players can
+// suggest game changes (feedback messages are highlighted). Backed by the Firebase
+// primary ONLY: POST to the chat path is an atomic append (no read-modify-write races),
+// which Pantry can't do — so when the primary is unreachable, chat just shows offline.
+const Chat = {
+  cache: [], status: "loading", lastFetch: 0, _fetching: false,
+  sending: false, lastSendTs: 0, feedbackMode: false,
+  MAX_LEN: 140, FETCH_EVERY: 4000, KEEP: 120,
+  available(){ return CLOUD.hasPrimary(); },
+  statusLine(){
+    if (!this.available()) return "💬 chat needs the online backend";
+    if (this.status==="sendfail") return "⚠️ message didn't send — tap SEND to retry";
+    if (this.status==="offline")  return "🌐 offline — can't reach the chat";
+    if (this.status==="loading")  return "🌐 loading chat…";
+    return "🌐 live · everyone with the game sees this";
+  },
+  async fetch(force){
+    if (!this.available()){ this.status="offline"; return; }
+    if (this._fetching) return;
+    if (!force && Date.now()-this.lastFetch < this.FETCH_EVERY) return;
+    this._fetching=true; this.lastFetch=Date.now();
+    try{
+      // push-ids sort chronologically, so $key order = message order
+      const r=await fetchT(CLOUD.fbUrl("chat")+'?orderBy="$key"&limitToLast='+this.KEEP, {cache:"no-store"}, 8000);
+      if (r && r.ok){
+        const d=(await r.json())||{};
+        this.cache=Object.keys(d).sort().map(k=>d[k])
+          .filter(m=> m && typeof m.text==="string" && m.text.trim())
+          .map(m=>({
+            name:(m.name||"???").toString().toUpperCase().slice(0,10)||"???",
+            cc:(typeof m.cc==="string") ? m.cc.toUpperCase().replace(/[^A-Z]/g,"").slice(0,2) : "",
+            text:m.text.toString().replace(/\s+/g," ").trim().slice(0,this.MAX_LEN),
+            ts:Number(m.ts)||0, fb:!!m.fb,
+          }));
+        if (this.status!=="sendfail") this.status="online";
+      } else if (this.status!=="sendfail") this.status="offline";
+    }catch(e){ if (this.status!=="sendfail") this.status="offline"; }
+    finally{ this._fetching=false; }
+  },
+  async send(){
+    const el=chatInput, text=(el.value||"").replace(/\s+/g," ").trim().slice(0,this.MAX_LEN);
+    if (!text || this.sending) return;
+    const nm=Profile.key(DB.name);
+    if (!nm){ G.scene="title"; needName=90; try{ nameInput.focus(); }catch(e){} return; }   // chat needs a name
+    if (Date.now()-this.lastSendTs < 2500) return;                                          // gentle anti-spam
+    this.sending=true; this.lastSendTs=Date.now();
+    const msg={ name:nm, cc:DB.cc||"", text, ts:Date.now(), fb:!!this.feedbackMode };
+    try{
+      const r=await fetchT(CLOUD.fbUrl("chat"), { method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(msg), keepalive:true }, 9000);
+      if (r && r.ok){
+        el.value="";                                       // sent → clear; on failure the text stays so nothing is lost
+        this.cache.push(msg); chatStick=true; this.status="online";
+        this.fetch(true);
+      } else this.status="sendfail";
+    }catch(e){ this.status="sendfail"; }
+    finally{ this.sending=false; }
+  },
+};
+
 // ---------------- themes / environments ----------------
 const THEMES = [
   { id:"city",   name:"KUALA LUMPUR",      sky:["#8fd0ff","#bfe6ff","#ffe9c2"], grass:"#3aa53a", grassDk:"#2e7d2e", soil:"#7a4a22", soilLine:"rgba(0,0,0,.18)", lava:false, night:false, accent:"#7CFC6A" },
@@ -695,7 +799,7 @@ function setKey(k,v){
     if (k==="p") togglePause();
     if (k==="enter") onConfirm();
     if (k==="s" && (G.scene==="title")) openShop();
-    if (k==="escape" && (G.scene==="shop"||G.scene==="pass")) G.scene="title";
+    if (k==="escape" && (G.scene==="shop"||G.scene==="pass"||G.scene==="chat")) G.scene="title";
     if (k==="escape" && G.scene==="howto") leaveHowto();
     if (k==="escape" && G.scene==="guide") closeGuide();
     if (k==="escape" && (G.scene==="play"||G.scene==="paused")) quitToMenu();
@@ -776,6 +880,20 @@ addEventListener("pointermove", e=>{ if(guideDrag){ guideScroll=clamp(guideDrag.
 addEventListener("pointerup",     ()=>{ guideDrag=null; }, {passive:true});
 addEventListener("pointercancel", ()=>{ guideDrag=null; }, {passive:true});
 addEventListener("wheel", e=>{ if(overGuide(e.clientX,e.clientY)){ guideScroll=clamp(guideScroll+e.deltaY*0.5, 0, guideScrollMax); e.preventDefault(); } }, {passive:false});
+
+// ===== CHAT scroll: drag or wheel inside the message list =====
+let chatScroll=0, chatScrollMax=0, chatRect=null, chatDrag=null, chatStick=true;   // stick=true → follow newest messages
+function overChat(clientX, clientY){
+  if (G.scene!=="chat" || !chatRect || chatScrollMax<=0) return false;
+  const r=canvas.getBoundingClientRect();
+  const x=(clientX-r.left)*(VW/r.width), y=(clientY-r.top)*(VH/r.height);
+  return x>=chatRect.x && x<=chatRect.x+chatRect.w && y>=chatRect.y && y<=chatRect.y+chatRect.h;
+}
+addEventListener("pointerdown", e=>{ if(overChat(e.clientX,e.clientY)){ const r=canvas.getBoundingClientRect(); chatDrag={ y:e.clientY, s0:chatScroll, scale:r.height?(VH/r.height):1 }; } }, {passive:true});
+addEventListener("pointermove", e=>{ if(chatDrag){ chatScroll=clamp(chatDrag.s0-(e.clientY-chatDrag.y)*chatDrag.scale, 0, chatScrollMax); chatStick=(chatScroll>=chatScrollMax-2); } }, {passive:true});
+addEventListener("pointerup",     ()=>{ chatDrag=null; }, {passive:true});
+addEventListener("pointercancel", ()=>{ chatDrag=null; }, {passive:true});
+addEventListener("wheel", e=>{ if(overChat(e.clientX,e.clientY)){ chatScroll=clamp(chatScroll+e.deltaY*0.5, 0, chatScrollMax); chatStick=(chatScroll>=chatScrollMax-2); e.preventDefault(); } }, {passive:false});
 
 // ===== touch controls: floating JOYSTICK (left side) to steer, JUMP/SHOOT on the right =====
 // Mobile only. Touch down anywhere on the LEFT side of the screen and a joystick spawns under
@@ -879,7 +997,7 @@ function nameBoxRect(){
   const wide = VW>=600;
   const pad=18, w=Math.min(wide?920:460, VW-2*pad), x0=(VW-w)/2;
   if (wide){ const colW=(w-3*pad)/2, Lx=x0+pad; return {x:Lx+10, y:214, w:colW-20, h:42}; }
-  return {x:x0+pad+8, y:180, w:w-2*pad-16, h:40};
+  return {x:x0+pad+8, y:164, w:w-2*pad-16, h:36};
 }
 nameInput.value = DB.name;
 nameInput.addEventListener("input", ()=>{ DB.name = nameInput.value; });
@@ -900,6 +1018,31 @@ function syncNameInput(){
   nameInput.style.height= (B.h*sy)+"px";
   nameInput.style.fontSize = Math.max(11, Math.round(15*sy))+"px";
   nameInput.style.borderColor = (needName>0 && Math.floor(frameCount/6)%2===0) ? "#ff5a5a" : "#7CFC6A";
+}
+
+// ---------------- chat message entry (DOM input overlaid on the canvas, like the name field) ----------------
+const chatInput = document.getElementById("chatInput");
+// chat-field rect in canvas coords — must match the input row layout in drawChat
+function chatBoxRect(){
+  const w=Math.min(640, VW-16), x0=VW/2-w/2;
+  return { x:x0+14, y:VH-104, w:w-28-92, h:36 };
+}
+chatInput.addEventListener("keydown", (e)=>{
+  e.stopPropagation();                              // don't let game keybinds fire while typing
+  if (e.key==="Enter"){ e.preventDefault(); Chat.send(); }
+  if (e.key==="Escape"){ e.preventDefault(); chatInput.blur(); G.scene="title"; }
+});
+function syncChatInput(){
+  if (G.scene!=="chat"){ if(chatInput.style.display!=="none"){ chatInput.style.display="none"; try{ chatInput.blur(); }catch(e){} } return; }
+  const r=canvas.getBoundingClientRect();
+  const sx=r.width/VW, sy=r.height/VH;
+  const B=chatBoxRect();
+  chatInput.style.display="block";
+  chatInput.style.left  = (r.left + B.x*sx)+"px";
+  chatInput.style.top   = (r.top  + B.y*sy)+"px";
+  chatInput.style.width = (B.w*sx)+"px";
+  chatInput.style.height= (B.h*sy)+"px";
+  chatInput.style.fontSize = Math.max(12, Math.round(14*sy))+"px";
 }
 
 // ---------------- audio ----------------
@@ -1628,7 +1771,7 @@ function bankAndSubmit(){
   lastPassUnlocks = addPassProgress(score);   // 🎖 battle-pass XP for this run + auto-grant any newly-unlocked tier rewards (kush/skins added to DB before the save below)
   const nm = Profile.key(DB.name) || "PLAYER";
   // serialize the 3 cloud writes (SCORE first) so a single free Pantry account isn't slammed by ~17 concurrent requests
-  Board.submit({ name:nm, score:Math.floor(score), dist:Math.floor(distance), hidden:Math.floor(hidden), ts:Date.now() })
+  Board.submit({ name:nm, cc:DB.cc, score:Math.floor(score), dist:Math.floor(distance), hidden:Math.floor(hidden), ts:Date.now() })
     .then(()=>Profile.save())            // push bank/best/bestDist (+owned/skin/pet) to the cloud account
     .then(()=>Stats.bump())              // +1 to the global all-time "games played" counter
     .catch(()=>{ try{ Profile.save(); }catch(e){} try{ Stats.bump(); }catch(e){} });
@@ -1697,7 +1840,7 @@ function render(){
   ctx.restore();
 
   uiButtons=[];
-  if (G.scene!==_prevScene){ if(G.scene==="title"||G.scene==="over") boardScroll=0; boardRect=null; boardScrollMax=0; _prevScene=G.scene; }  // fresh scroll per board view
+  if (G.scene!==_prevScene){ if(G.scene==="title"||G.scene==="over") boardScroll=0; boardRect=null; boardScrollMax=0; if(G.scene!=="chat"){ chatRect=null; chatScrollMax=0; } _prevScene=G.scene; }  // fresh scroll per board view
   if (G.scene==="intro") drawIntro();
   else if (G.scene==="howto") drawHowto();
   else if (G.scene==="guide") drawGuide();
@@ -1705,10 +1848,12 @@ function render(){
   else if (G.scene==="shop") drawShop();
   else if (G.scene==="pass") drawPass();
   else if (G.scene==="over") drawGameOver();
+  else if (G.scene==="chat") drawChat();
   else if (G.scene==="paused") drawPaused();
   if (G.scene==="play") drawMenuButton();
 
   syncNameInput();
+  syncChatInput();
 }
 
 // ----- backgrounds -----
@@ -2924,7 +3069,8 @@ function drawBoard(x, y, w, h, total, hiName){
     ctx.textAlign="left";
     ctx.fillStyle = i===0?"#ffd54a":i===1?"#cfd8e8":i===2?"#e0a878":"#9fb4d6";
     ctx.font="bold "+(sm?12:15)+"px 'Trebuchet MS'"; ctx.fillText((i+1)+".", x, ry);
-    ctx.fillStyle = me?"#eaffea":"#fff"; ctx.font=(sm?12:15)+"px 'Trebuchet MS'"; ctx.fillText((r.name||"???").slice(0,10), x+(sm?20:26), ry);
+    if (r.cc) drawFlag(r.cc, x+(sm?20:26), ry-(sm?8:9), sm?13:16, sm?9:11);                  // player's country flag
+    ctx.fillStyle = me?"#eaffea":"#fff"; ctx.font=(sm?12:15)+"px 'Trebuchet MS'"; ctx.fillText((r.name||"???").slice(0,10), x+(sm?20:26)+(r.cc?(sm?17:21):0), ry);
     ctx.textAlign="right";
     ctx.fillStyle="#8fa6c8"; ctx.font=(sm?10:12)+"px 'Trebuchet MS'"; ctx.fillText((r.dist||0)+"m", x+rw, ry);                                  // distance
     ctx.fillStyle="#9fe89f"; ctx.font="bold "+(sm?11:13)+"px 'Trebuchet MS'"; ctx.fillText(r.score+"🌿", x+rw-distW, ry);                       // kush
@@ -2943,6 +3089,20 @@ function drawSoundButton(x, y, w, h){
   button(x, y, w||34, h||28, muted?"🔇":"🔊", toggleMute, "rgba(8,12,24,.62)");
 }
 
+// 3-way country picker (🇲🇾 / 🇳🇱 / 🌍) — the chosen flag shows next to your name on the leaderboard + chat
+function drawFlagPicker(x, y, w, h){
+  const gap=6, bw=(w-2*gap)/3, small=bw<112;
+  for (let i=0;i<FLAG_OPTS.length;i++){
+    const o=FLAG_OPTS[i], bx=x+i*(bw+gap), sel=DB.cc===o.cc;
+    ctx.fillStyle= sel?"rgba(124,252,106,.22)":"rgba(255,255,255,.07)"; roundRect(bx,y,bw,h,7); ctx.fill();
+    ctx.strokeStyle= sel?"#7CFC6A":"rgba(255,255,255,.25)"; ctx.lineWidth=1.5; roundRect(bx,y,bw,h,7); ctx.stroke();
+    drawFlag(o.cc, bx+7, y+h/2-5, 15, 10);
+    ctx.textAlign="left"; ctx.fillStyle= sel?"#eaffea":"#cfe0ff"; ctx.font="bold "+(small?9:10)+"px 'Trebuchet MS'";
+    ctx.fillText((small && o.cc==="NL") ? "HOLLAND" : o.label, bx+26, y+h/2+3.5);   // full "NETHERLANDS" clips on phone-width buttons
+    uiButtons.push({x:bx, y, w:bw, h, action:()=>{ DB.cc=o.cc; Profile.save(); }});   // save → flag follows the account to other devices
+  }
+}
+
 function drawTitle(){
   ctx.fillStyle="rgba(6,10,20,.55)"; ctx.fillRect(0,0,VW,VH);
   const wide = VW>=600;
@@ -2959,12 +3119,14 @@ function drawTitle(){
     const colW=(w-3*pad)/2, Lx=x0+pad, Rx=x0+pad+colW+pad, Lcx=Lx+colW/2, Rcx=Rx+colW/2;
     ctx.strokeStyle="rgba(255,255,255,.10)"; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(cx,172); ctx.lineTo(cx,VH-40); ctx.stroke();
     ctx.fillStyle=nameCol; ctx.font="bold 14px 'Trebuchet MS'"; ctx.textAlign="center"; ctx.fillText(empty?"ENTER YOUR NAME ↓":"YOUR NAME", Lcx, 198);
-    const sk=curSkin(); ctx.fillStyle="#9fb4d6"; ctx.font="12px 'Trebuchet MS'"; ctx.fillText("Skin: "+sk.name+" · Best: "+DB.best+"🌿", Lcx, 300);
+    drawFlagPicker(Lx+10, 266, colW-20, 26);
+    const sk=curSkin(); ctx.fillStyle="#9fb4d6"; ctx.font="12px 'Trebuchet MS'"; ctx.textAlign="center"; ctx.fillText("Skin: "+sk.name+" · Best: "+DB.best+"🌿", Lcx, 308);
     ctx.textAlign="left";
     button(Lx, 318, colW, 48, "▶  PLAY", ()=>startGame());
     button(Lx, 372, colW/2-4, 38, "🛍  SHOP", ()=>openShop(), "rgba(255,213,74,.18)");
     button(Lx+colW/2+4, 372, colW/2-4, 38, "🎖  PASS", ()=>openPass(), "rgba(201,160,255,.20)");
-    button(Lx, 416, colW, 38, "📖  HOW TO PLAY", ()=>openGuide("title"), "rgba(88,166,255,.18)");
+    button(Lx, 416, colW/2-4, 38, "📖  HOW TO", ()=>openGuide("title"), "rgba(88,166,255,.18)");
+    button(Lx+colW/2+4, 416, colW/2-4, 38, "💬  CHAT", ()=>openChat(), "rgba(88,166,255,.18)");
     ctx.textAlign="center"; ctx.fillStyle="#8298ba"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText("← → run · SPACE jump · F shoot", Lcx, 470);
     linkText("ℹ️  How to play fullscreen", Lcx, 494, ()=>{ G.scene="howto"; });
     ctx.fillStyle="#ffd54a"; ctx.font="bold 18px 'Trebuchet MS'"; ctx.fillText("🏆 ALL-TIME TOP "+BOARD.max, Rcx, 192);
@@ -2974,12 +3136,14 @@ function drawTitle(){
     drawBoard(Rx+8, 246, colW-16, (VH-42)-246, BOARD.max, null);
   } else {
     const ix=x0+pad, iw=w-2*pad;
-    ctx.fillStyle=nameCol; ctx.font="bold 13px 'Trebuchet MS'"; ctx.textAlign="center"; ctx.fillText(empty?"ENTER YOUR NAME ↓":"YOUR NAME", cx, 160);
+    ctx.fillStyle=nameCol; ctx.font="bold 13px 'Trebuchet MS'"; ctx.textAlign="center"; ctx.fillText(empty?"ENTER YOUR NAME ↓":"YOUR NAME", cx, 156);
     ctx.textAlign="left";
-    button(ix, 226, iw, 42, "▶  PLAY", ()=>startGame());
-    button(ix, 272, iw/2-4, 36, "🛍  SHOP", ()=>openShop(), "rgba(255,213,74,.18)");
-    button(ix+iw/2+4, 272, iw/2-4, 36, "🎖  PASS", ()=>openPass(), "rgba(201,160,255,.20)");
-    button(ix, 312, iw, 36, "📖  HOW TO PLAY", ()=>openGuide("title"), "rgba(88,166,255,.18)");
+    drawFlagPicker(ix+8, 206, iw-16, 24);
+    button(ix, 236, iw, 40, "▶  PLAY", ()=>startGame());
+    button(ix, 280, iw/2-4, 34, "🛍  SHOP", ()=>openShop(), "rgba(255,213,74,.18)");
+    button(ix+iw/2+4, 280, iw/2-4, 34, "🎖  PASS", ()=>openPass(), "rgba(201,160,255,.20)");
+    button(ix, 318, iw/2-4, 32, "📖  HOW TO", ()=>openGuide("title"), "rgba(88,166,255,.18)");
+    button(ix+iw/2+4, 318, iw/2-4, 32, "💬  CHAT", ()=>openChat(), "rgba(88,166,255,.18)");
     ctx.textAlign="center"; ctx.fillStyle="#ffd54a"; ctx.font="bold 15px 'Trebuchet MS'"; ctx.fillText("🏆 ALL-TIME TOP "+BOARD.max, cx, 368);
     ctx.fillStyle="#8fa6c8"; ctx.font="10px 'Trebuchet MS'"; ctx.fillText(Board.statusLine()+" · every device", cx, 381);
     ctx.fillStyle="#ffd54a"; ctx.font="bold 10px 'Trebuchet MS'"; ctx.fillText("🏁 Season "+seasonLabel()+" ends in "+fmtCountdown(seasonEndMs()), cx, 393);
@@ -3157,6 +3321,91 @@ function drawGameOver(){
   ctx.textAlign="center"; ctx.fillStyle="#fff"; ctx.globalAlpha=0.6+0.4*Math.sin(frameCount*0.12); ctx.font="bold 14px 'Trebuchet MS'";
   ctx.fillText("tap / ENTER to run again",cx,VH-30); ctx.globalAlpha=1; ctx.textAlign="left";
 }
+// ---------------- 💬 CHAT scene ----------------
+function openChat(){ G.scene="chat"; chatStick=true; Chat.fetch(true); }
+function fmtAgo(ts){
+  if (!ts) return "";
+  const s=Math.max(0, Math.floor((Date.now()-ts)/1000));
+  if (s<60) return "now";
+  const m=Math.floor(s/60); if (m<60) return m+"m";
+  const h=Math.floor(m/60); if (h<24) return h+"h";
+  return Math.floor(h/24)+"d";
+}
+// greedy word-wrap for the current ctx.font; breaks unbreakable runs by character
+function wrapText(text, maxW){
+  const lines=[]; let line="";
+  for (const wd of String(text).split(" ")){
+    const t=line?line+" "+wd:wd;
+    if (ctx.measureText(t).width<=maxW){ line=t; continue; }
+    if (line) lines.push(line);
+    if (ctx.measureText(wd).width>maxW){
+      let cur=""; for(const ch of wd){ if(ctx.measureText(cur+ch).width<=maxW) cur+=ch; else { lines.push(cur); cur=ch; } }
+      line=cur;
+    } else line=wd;
+  }
+  if (line) lines.push(line);
+  return lines.length?lines:[""];
+}
+function drawChat(){
+  ctx.fillStyle="rgba(6,10,20,.86)"; ctx.fillRect(0,0,VW,VH);
+  const w=Math.min(640, VW-16), x0=VW/2-w/2, cx=VW/2;
+  panel(x0, 12, w, VH-24, "rgba(88,166,255,.5)");
+  drawSoundButton(x0+12, 20, 34, 28);
+  ctx.textAlign="center"; ctx.fillStyle="#58a6ff"; ctx.font="bold 22px 'Trebuchet MS'"; ctx.fillText("💬  KUSH CHAT", cx, 42);
+  ctx.fillStyle="#8fa6c8"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText(Chat.statusLine(), cx, 59);
+  ctx.fillStyle="#ffd54a"; ctx.font="10px 'Trebuchet MS'"; ctx.fillText("💡 turn FEEDBACK ON to suggest changes to the game", cx, 73);
+  ctx.textAlign="left";
+  Chat.fetch();                                              // self-throttled background poll while the tab is open
+  // ----- scrollable message list -----
+  const bx=x0+14, bw2=w-28, by=82, bh=(VH-110)-by;
+  chatRect={x:bx, y:by, w:bw2, h:bh};
+  const lh=15, headH=16, gapM=8, textW=bw2-10;
+  ctx.font="12px 'Trebuchet MS'";
+  const blocks=[]; let totalH=0;
+  for (const m of Chat.cache){ const lines=wrapText(m.text, textW); const hh=headH+lines.length*lh+gapM; blocks.push({m, lines, h:hh}); totalH+=hh; }
+  chatScrollMax=Math.max(0, totalH-bh);
+  if (chatStick) chatScroll=chatScrollMax;
+  chatScroll=clamp(chatScroll, 0, chatScrollMax);
+  if (!blocks.length){
+    ctx.textAlign="center"; ctx.fillStyle="#8fa6c8"; ctx.font="13px 'Trebuchet MS'";
+    ctx.fillText(Chat.status==="loading" ? "Loading chat…" : (Chat.status==="online" ? "No messages yet — say hi! 🌿" : "Chat unreachable — check your connection"), cx, by+40);
+    ctx.textAlign="left";
+  }
+  ctx.save();
+  ctx.beginPath(); ctx.rect(bx-6, by, bw2+12, bh); ctx.clip();
+  let yy=by+4-chatScroll;
+  const meName=Profile.key(DB.name);
+  for (const b of blocks){
+    if (yy+b.h>=by && yy<=by+bh){
+      const m=b.m, me=meName && m.name===meName;
+      if (m.fb){ ctx.fillStyle="rgba(255,213,74,.10)"; roundRect(bx-5, yy-2, bw2+10, b.h-4, 6); ctx.fill(); }   // feedback = highlighted
+      drawFlag(m.cc, bx, yy+2, 14, 10);
+      ctx.fillStyle= me?"#7CFC6A":(m.fb?"#ffd54a":"#58a6ff"); ctx.font="bold 12px 'Trebuchet MS'";
+      ctx.fillText((m.fb?"💡 ":"")+m.name, bx+(m.cc?19:0), yy+11);
+      ctx.textAlign="right"; ctx.fillStyle="#5d7290"; ctx.font="10px 'Trebuchet MS'"; ctx.fillText(fmtAgo(m.ts), bx+bw2, yy+11); ctx.textAlign="left";
+      ctx.fillStyle= m.fb?"#ffe9a8":"#e8f0ff"; ctx.font="12px 'Trebuchet MS'";
+      let ty=yy+headH+11;
+      for (const ln of b.lines){ ctx.fillText(ln, bx+6, ty); ty+=lh; }
+    }
+    yy+=b.h;
+  }
+  ctx.restore();
+  if (chatScrollMax>0){                                      // slim scrollbar, same style as the leaderboard
+    const trackX=x0+w-9, frac=bh/totalH, thumbH=Math.max(18,bh*frac), thumbY=by+(chatScroll/chatScrollMax)*(bh-thumbH);
+    ctx.fillStyle="rgba(255,255,255,.10)"; roundRect(trackX,by,3,bh,1.5); ctx.fill();
+    ctx.fillStyle="rgba(88,166,255,.6)";   roundRect(trackX,thumbY,3,thumbH,1.5); ctx.fill();
+  }
+  // ----- input row (HTML #chatInput is overlaid at chatBoxRect by syncChatInput) + buttons -----
+  button(x0+w-14-84, VH-104, 84, 36, Chat.sending?"…":"SEND", ()=>Chat.send(), "rgba(88,166,255,.25)");
+  const fbOn=Chat.feedbackMode;
+  button(x0+14, VH-60, Math.min(210, w-28-108), 30, "💡 FEEDBACK: "+(fbOn?"ON":"OFF"), ()=>{ Chat.feedbackMode=!Chat.feedbackMode; }, fbOn?"rgba(255,213,74,.28)":"rgba(255,255,255,.10)");
+  button(x0+w-14-96, VH-60, 96, 30, "BACK", ()=>{ G.scene="title"; }, "rgba(255,255,255,.14)");
+  if (!meName){
+    ctx.textAlign="center"; ctx.fillStyle="#ff8a8a"; ctx.font="10px 'Trebuchet MS'";
+    ctx.fillText("enter your name on the title screen to send messages", cx, VH-18); ctx.textAlign="left";
+  }
+}
+
 // small in-game button (top, clear of the controls) → back to the main menu
 function drawMenuButton(){
   if (VW<720){
