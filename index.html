@@ -1837,7 +1837,7 @@ function render(){
   ctx.restore();
 
   drawWeather(th);
-  if (G.scene==="play"||G.scene==="paused"){ drawInsanity(); drawHUD(); }
+  if (G.scene==="play"||G.scene==="paused"){ drawInsanity(); drawHUD(); drawBossMeter(); }
   drawBanners();
   if (levelFlash>0){ ctx.fillStyle=`rgba(255,255,255,${levelFlash/120})`; ctx.fillRect(0,0,VW,VH); }
   if (flash>0){ ctx.fillStyle=`rgba(255,255,255,${flash/30})`; ctx.fillRect(0,0,VW,VH); }
@@ -2638,6 +2638,37 @@ function drawCastleEntry(){
 }
 
 // ----- HUD -----
+// ----- 👑 Narco-Boss proximity hint — deliberately quiet: a faint pill that fades in as you
+// close the distance, with a small chevron drifting toward him. Hidden once he's on screen. -----
+const BOSS_METER_RANGE = 3000;                  // world px (= 300 m); beyond this, no hint at all
+function drawBossMeter(){
+  if (dead || hanging || castleT>0) return;
+  const b = enemies.find(e=> e.boss && !e.dead);
+  if (!b) return;
+  const dx = (b.x+b.w/2) - (player.x+player.w/2);
+  if (Math.abs(dx) > BOSS_METER_RANGE) return;
+  if (b.x+b.w > cam.x && b.x < camRightX()) return;   // boss already visible — the meter would be noise
+  drawBossMeterAt(dx);
+}
+// pure screen-space draw (dx = boss − player in world px) — separate so it can be checked in isolation
+function drawBossMeterAt(dx){
+  const m = Math.max(1, Math.round(Math.abs(dx)/10));
+  const closeness = clamp(1 - m/(BOSS_METER_RANGE/10), 0, 1);
+  const a = (0.30 + 0.45*closeness) * (0.92 + 0.08*Math.sin(frameCount*0.07));   // closer = clearer, with a slow breathe
+  const dir = dx>=0 ? 1 : -1;
+  const cx = VW/2, y = (VW<720 ? 78+safeTop : 64);
+  ctx.save(); ctx.globalAlpha=a;
+  ctx.font="bold 11px 'Trebuchet MS'"; ctx.textBaseline="middle";
+  const label="👑 "+m+"m";
+  const tw=ctx.measureText(label).width, pw=tw+34;
+  ctx.fillStyle="rgba(8,12,24,.42)"; roundRect(cx-pw/2, y-9, pw, 18, 9); ctx.fill();
+  ctx.fillStyle="#ffd54a";
+  ctx.textAlign= dir>0 ? "left" : "right";
+  ctx.fillText(label, dir>0 ? cx-pw/2+8 : cx+pw/2-8, y+0.5);
+  const ax=(dir>0 ? cx+pw/2-11 : cx-pw/2+11) + Math.sin(frameCount*0.12)*1.5*dir;   // chevron, faint drift toward him
+  ctx.beginPath(); ctx.moveTo(ax+4*dir,y); ctx.lineTo(ax-3*dir,y-4.5); ctx.lineTo(ax-3*dir,y+4.5); ctx.closePath(); ctx.fill();
+  ctx.restore();
+}
 function drawHUDCompact(){
   ctx.save();
   ctx.translate(0, 14+safeTop);     // drop the bar below the top edge / status bar so it's clearly visible
