@@ -3513,10 +3513,12 @@ function drawChat(){
 // small in-game button (top, clear of the controls) → back to the main menu
 function drawMenuButton(){
   if (VW<720){
-    button(VW-108, 14+safeTop, 30, 22, "📖", ()=>openGuide("play"), "rgba(8,12,24,.66)");   // how-to-play (pauses the run); right of the lives icons
+    button(VW-142, 14+safeTop, 30, 22, "⏸", togglePause, "rgba(8,12,24,.66)");              // pause; right of the lives icons (cap 3 → ends ~x166)
+    button(VW-108, 14+safeTop, 30, 22, "📖", ()=>openGuide("play"), "rgba(8,12,24,.66)");   // how-to-play (pauses the run)
     drawSoundButton(VW-74, 14+safeTop, 30, 22);
     button(VW-40, 14+safeTop, 34, 22, "≡", quitToMenu, "rgba(8,12,24,.66)");
   } else {
+    button(VW/2-58, 8, 42, 28, "⏸", togglePause, "rgba(8,12,24,.62)");                       // pause
     button(VW/2-12, 8, 42, 28, "📖", ()=>openGuide("play"), "rgba(8,12,24,.62)");            // how-to-play (pauses the run)
     drawSoundButton(VW/2+34, 8, 38, 28);
     button(VW/2+76, 8, 104, 28, "≡ MENU", quitToMenu, "rgba(8,12,24,.62)");                  // left of MENU, clear of the top-right police panel
@@ -3567,6 +3569,8 @@ if (DB.name && DB.name.trim()) Profile.load(DB.name);   // adopt cloud account f
 addEventListener("online", ()=>{ try{ Board.flushPending(); }catch(e){} });
 addEventListener("pageshow", ()=>{ try{ Board.flushPending(); }catch(e){} });
 document.addEventListener("visibilitychange", ()=>{ if(!document.hidden){ try{ Board.flushPending(); }catch(e){} } });
+// phone: switching apps mid-run lands you on the pause screen, not live gameplay
+document.addEventListener("visibilitychange", ()=>{ if(document.hidden && G.scene==="play") togglePause(); });
 resetWorld(true);
 requestAnimationFrame(loop);
 </script>
