@@ -3526,10 +3526,13 @@ function drawChat(){
 // small in-game button (top, clear of the controls) → back to the main menu
 function drawMenuButton(){
   if (VW<720){
-    button(VW-142, 14+safeTop, 30, 22, "⏸", togglePause, "rgba(8,12,24,.66)");              // pause; right of the lives icons (cap 3 → ends ~x166)
-    button(VW-108, 14+safeTop, 30, 22, "📖", ()=>openGuide("play"), "rgba(8,12,24,.66)");   // how-to-play (pauses the run)
-    drawSoundButton(VW-74, 14+safeTop, 30, 22);
-    button(VW-40, 14+safeTop, 34, 22, "≡", quitToMenu, "rgba(8,12,24,.66)");
+    // upright phone: the compact HUD bar + police meter span the full width, so the buttons
+    // get their own row BELOW the police meter (abs y 52..60+safeTop). Sideways: top row as before.
+    const by = uiPortrait ? 66+safeTop : 14+safeTop;
+    button(VW-142, by, 30, 22, "⏸", togglePause, "rgba(8,12,24,.66)");
+    button(VW-108, by, 30, 22, "📖", ()=>openGuide("play"), "rgba(8,12,24,.66)");   // how-to-play (pauses the run)
+    drawSoundButton(VW-74, by, 30, 22);
+    button(VW-40, by, 34, 22, "≡", quitToMenu, "rgba(8,12,24,.66)");
   } else {
     button(VW/2-58, 8, 42, 28, "⏸", togglePause, "rgba(8,12,24,.62)");                       // pause
     button(VW/2-12, 8, 42, 28, "📖", ()=>openGuide("play"), "rgba(8,12,24,.62)");            // how-to-play (pauses the run)
