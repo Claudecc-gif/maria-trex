@@ -2701,8 +2701,12 @@ function drawHUDCompact(){
 function drawHUD(){
   if (VW<720){ drawHUDCompact(); return; }
   ctx.save();
-  // 🏰 logo — upper middle of the game
-  ctx.save(); ctx.globalAlpha=0.92; drawLogo(VW/2, 33, 0.22, frameCount); ctx.restore();
+  // 🏰 logo — between the score panel (ends x=310) and the ⏸/📖/🔊/MENU row (starts VW/2-58);
+  // centered it sat underneath the buttons. The glowing text needs ±45 clear; the faint
+  // skyline backdrop may overlap edges. No room (narrow landscape, e.g. iPad) → skip it.
+  const lgLo=355, lgHi=VW/2-103;
+  if (lgHi>=lgLo){ const lgx=Math.min(Math.max((310+VW/2-58)/2, lgLo), lgHi);
+    ctx.save(); ctx.globalAlpha=0.92; drawLogo(lgx, 33, 0.22, frameCount); ctx.restore(); }
 
   // score / dist panel (left)
   ctx.fillStyle="rgba(8,12,24,.55)"; roundRect(10,10,300,62,10); ctx.fill();

@@ -1,5 +1,5 @@
 /* Maria T-Rex — service worker: works offline, but stays update-friendly */
-const CACHE = "kush-rush-v18";
+const CACHE = "kush-rush-v19";
 const ASSETS = [
   "./", "index.html", "manifest.json",
   "icon.svg", "icon-192.png", "icon-512.png", "apple-touch-icon.png"
