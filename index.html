@@ -109,11 +109,13 @@ const canvas = document.getElementById("game");
 const ctx = canvas.getContext("2d");
 // Fixed virtual HEIGHT, virtual WIDTH follows the screen aspect → fills portrait & landscape,
 // no letterbox, no distortion (canvas aspect always matches the screen).
-const VH = 540;
+let VH = 540;                         // reassigned ONLY while menu scenes draw on portrait (uiScale)
 let VW = 960;
 let safeTop = 0;                      // status-bar / notch inset in canvas px (keeps the HUD visible)
+let uiPortrait = false;               // phone held upright → menus render scaled-down (gameplay untouched)
 function fitCanvas(){
   const w = window.innerWidth || 960, h = window.innerHeight || 540;
+  uiPortrait = h > w;
   VW = Math.max(280, Math.round(VH * (w / h)));
   canvas.width = VW; canvas.height = VH;
   ctx.imageSmoothingEnabled = false;
@@ -123,6 +125,10 @@ function fitCanvas(){
 fitCanvas();
 addEventListener("resize", fitCanvas);
 addEventListener("orientationchange", fitCanvas);
+// Portrait: VW collapses to ~280, so the fixed-px menu UI fills the screen and looks huge.
+// Menu scenes are therefore drawn into a LARGER virtual space (≈460 wide) and scaled back
+// down. Landscape and the in-game scene always return 1 — those layouts are untouched.
+function uiScale(){ return (uiPortrait && G.scene!=="play") ? Math.max(0.55, Math.min(1, VW/460)) : 1; }
 // zoom the world OUT on narrow/portrait screens so you can see more of the surroundings (1 = no zoom)
 function viewZoom(){ return clamp(VW/560, 0.56, 1); }
 // right edge of the VISIBLE world (accounts for zoom-out) — used so off-screen-right objects aren't
@@ -817,10 +823,10 @@ document.querySelectorAll(".btn").forEach(b=>{ btnEls[b.dataset.key]=b; });
 
 // canvas pointer (menus + start)
 function ptr(e){
-  const r=canvas.getBoundingClientRect();
+  const r=canvas.getBoundingClientRect(), s=uiScale();   // menus on portrait live in a scaled space
   const cx=(e.touches?e.touches[0].clientX:e.clientX)-r.left;
   const cy=(e.touches?e.touches[0].clientY:e.clientY)-r.top;
-  return { x:cx*(VW/r.width), y:cy*(VH/r.height) };
+  return { x:cx*(VW/r.width)/s, y:cy*(VH/r.height)/s };
 }
 let uiButtons=[];
 function handleClick(e){
@@ -857,11 +863,11 @@ let boardDrag=null;
 function overBoard(clientX, clientY){
   if (!boardRect || boardScrollMax<=0) return false;
   if (G.scene!=="title" && G.scene!=="over") return false;
-  const r=canvas.getBoundingClientRect();
-  const x=(clientX-r.left)*(VW/r.width), y=(clientY-r.top)*(VH/r.height);
+  const r=canvas.getBoundingClientRect(), s=uiScale();
+  const x=(clientX-r.left)*(VW/r.width)/s, y=(clientY-r.top)*(VH/r.height)/s;
   return x>=boardRect.x && x<=boardRect.x+boardRect.w && y>=boardRect.y && y<=boardRect.y+boardRect.h;
 }
-addEventListener("pointerdown", e=>{ if(overBoard(e.clientX,e.clientY)){ const r=canvas.getBoundingClientRect(); boardDrag={ y:e.clientY, s0:boardScroll, scale:r.height?(VH/r.height):1 }; } }, {passive:true});
+addEventListener("pointerdown", e=>{ if(overBoard(e.clientX,e.clientY)){ const r=canvas.getBoundingClientRect(); boardDrag={ y:e.clientY, s0:boardScroll, scale:r.height?(VH/(r.height*uiScale())):1 }; } }, {passive:true});
 addEventListener("pointermove", e=>{ if(boardDrag){ boardScroll=clamp(boardDrag.s0-(e.clientY-boardDrag.y)*boardDrag.scale, 0, boardScrollMax); } }, {passive:true});
 addEventListener("pointerup",     ()=>{ boardDrag=null; }, {passive:true});
 addEventListener("pointercancel", ()=>{ boardDrag=null; }, {passive:true});
@@ -871,11 +877,11 @@ addEventListener("wheel", e=>{ if(overBoard(e.clientX,e.clientY)){ boardScroll=c
 let guideScroll=0, guideScrollMax=0, guideRect=null, guideDrag=null;
 function overGuide(clientX, clientY){
   if (G.scene!=="guide" || !guideRect || guideScrollMax<=0) return false;
-  const r=canvas.getBoundingClientRect();
-  const x=(clientX-r.left)*(VW/r.width), y=(clientY-r.top)*(VH/r.height);
+  const r=canvas.getBoundingClientRect(), s=uiScale();
+  const x=(clientX-r.left)*(VW/r.width)/s, y=(clientY-r.top)*(VH/r.height)/s;
   return x>=guideRect.x && x<=guideRect.x+guideRect.w && y>=guideRect.y && y<=guideRect.y+guideRect.h;
 }
-addEventListener("pointerdown", e=>{ if(overGuide(e.clientX,e.clientY)){ const r=canvas.getBoundingClientRect(); guideDrag={ y:e.clientY, s0:guideScroll, scale:r.height?(VH/r.height):1 }; } }, {passive:true});
+addEventListener("pointerdown", e=>{ if(overGuide(e.clientX,e.clientY)){ const r=canvas.getBoundingClientRect(); guideDrag={ y:e.clientY, s0:guideScroll, scale:r.height?(VH/(r.height*uiScale())):1 }; } }, {passive:true});
 addEventListener("pointermove", e=>{ if(guideDrag){ guideScroll=clamp(guideDrag.s0-(e.clientY-guideDrag.y)*guideDrag.scale, 0, guideScrollMax); } }, {passive:true});
 addEventListener("pointerup",     ()=>{ guideDrag=null; }, {passive:true});
 addEventListener("pointercancel", ()=>{ guideDrag=null; }, {passive:true});
@@ -885,11 +891,11 @@ addEventListener("wheel", e=>{ if(overGuide(e.clientX,e.clientY)){ guideScroll=c
 let chatScroll=0, chatScrollMax=0, chatRect=null, chatDrag=null, chatStick=true;   // stick=true → follow newest messages
 function overChat(clientX, clientY){
   if (G.scene!=="chat" || !chatRect || chatScrollMax<=0) return false;
-  const r=canvas.getBoundingClientRect();
-  const x=(clientX-r.left)*(VW/r.width), y=(clientY-r.top)*(VH/r.height);
+  const r=canvas.getBoundingClientRect(), s=uiScale();
+  const x=(clientX-r.left)*(VW/r.width)/s, y=(clientY-r.top)*(VH/r.height)/s;
   return x>=chatRect.x && x<=chatRect.x+chatRect.w && y>=chatRect.y && y<=chatRect.y+chatRect.h;
 }
-addEventListener("pointerdown", e=>{ if(overChat(e.clientX,e.clientY)){ const r=canvas.getBoundingClientRect(); chatDrag={ y:e.clientY, s0:chatScroll, scale:r.height?(VH/r.height):1 }; } }, {passive:true});
+addEventListener("pointerdown", e=>{ if(overChat(e.clientX,e.clientY)){ const r=canvas.getBoundingClientRect(); chatDrag={ y:e.clientY, s0:chatScroll, scale:r.height?(VH/(r.height*uiScale())):1 }; } }, {passive:true});
 addEventListener("pointermove", e=>{ if(chatDrag){ chatScroll=clamp(chatDrag.s0-(e.clientY-chatDrag.y)*chatDrag.scale, 0, chatScrollMax); chatStick=(chatScroll>=chatScrollMax-2); } }, {passive:true});
 addEventListener("pointerup",     ()=>{ chatDrag=null; }, {passive:true});
 addEventListener("pointercancel", ()=>{ chatDrag=null; }, {passive:true});
@@ -1846,6 +1852,12 @@ function render(){
 
   uiButtons=[];
   if (G.scene!==_prevScene){ if(G.scene==="title"||G.scene==="over") boardScroll=0; boardRect=null; boardScrollMax=0; if(G.scene!=="chat"){ chatRect=null; chatScrollMax=0; } _prevScene=G.scene; }  // fresh scroll per board view
+  // portrait phone: menu scenes draw into a larger virtual space scaled back down so the UI
+  // isn't huge; VW/VH/safeTop are swapped for the duration so every menu layout + the DOM
+  // input overlays (which divide by VW/VH) follow along. uiButtons land in this same space —
+  // ptr()/overBoard/overGuide/overChat divide taps by uiScale() to match.
+  const _ms=uiScale(), _vw=VW, _vh=VH, _st=safeTop;
+  if (_ms!==1){ ctx.save(); ctx.scale(_ms,_ms); VW=Math.round(VW/_ms); VH=Math.round(VH/_ms); safeTop=Math.round(safeTop/_ms); }
   if (G.scene==="intro") drawIntro();
   else if (G.scene==="howto") drawHowto();
   else if (G.scene==="guide") drawGuide();
@@ -1859,6 +1871,7 @@ function render(){
 
   syncNameInput();
   syncChatInput();
+  if (_ms!==1){ ctx.restore(); VW=_vw; VH=_vh; safeTop=_st; }
 }
 
 // ----- backgrounds -----
