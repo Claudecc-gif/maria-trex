@@ -100,7 +100,7 @@
    • Bribe the cops ONCE for 100 kush — or get hanged from a weed tree
    • Each level you enter the KUSH CASTLE; it gets crazier every time
    • KL Petronas Towers obstacle · 🪽 wings power-up at the sky-top
-   • BONG = speed · CALI BUD = invincible star · BLOW CANNON = joints
+   • BONG = speed · CALI BUD = invincible star · BLOW CANNON = guns (joints / laser / SMG / rocket)
    • Trampolines fling you sky-high · GLOBAL high-score leaderboard
    • 4 environments: Kuala Lumpur / Desert / Volcano / Neon Night
    ===================================================================== */
@@ -152,21 +152,32 @@ const AMMO_CAP = 25;               // most joints you can carry/shoot at once
 // cd=frames between shots · load=ammo per pickup · cap=carry cap · count=pellets · spread=arc(rad)
 // speed=px/f · dmg=per hit · blast=AoE radius(px,0=none) · recoil=knockback · sound=sfx key
 const WEAPONS = {
-  joint:   {key:"joint",   name:"JOINTS",       emoji:"🚬", cd:11, load:14, cap:25, count:1, spread:0,    speed:12, dmg:1, blast:0,  recoil:0.6, col:"#f6f1e2", r:4, sound:"shoot"   },
-  shotgun: {key:"shotgun", name:"BLUNT SHELLS", emoji:"🌿", cd:26, load:8,  cap:12, count:5, spread:0.30, speed:11, dmg:1, blast:0,  recoil:1.8, col:"#bdf79a", r:3, sound:"shotgun" },
-  smg:     {key:"smg",     name:"VAPE SMG",     emoji:"⚡", cd:5,  load:34, cap:48, count:1, spread:0.06, speed:14, dmg:1, blast:0,  recoil:0.22,col:"#9fe8ff", r:3, sound:"smg"     },
-  rocket:  {key:"rocket",  name:"BONG ROCKET",  emoji:"🚀", cd:42, load:5,  cap:8,  count:1, spread:0,    speed:9,  dmg:3, blast:56, recoil:2.4, col:"#ff9be0", r:7, sound:"rocket"  },
+  joint:  {key:"joint",  name:"JOINTS",      emoji:"🚬", cd:11, load:14, cap:25, count:1, spread:0,    speed:12, dmg:1, blast:0,  recoil:0.6,  col:"#f6f1e2", r:4, sound:"shoot"  },
+  laser:  {key:"laser",  name:"LASER DAB",   emoji:"🔆", cd:9,  load:18, cap:28, count:1, spread:0,    speed:17, dmg:1, blast:0,  recoil:0.5,  col:"#7CFFCB", r:3, pierce:3, sound:"laser" },
+  smg:    {key:"smg",    name:"VAPE SMG",    emoji:"⚡", cd:5,  load:34, cap:48, count:1, spread:0.06, speed:14, dmg:1, blast:0,  recoil:0.22, col:"#9fe8ff", r:3, sound:"smg"    },
+  rocket: {key:"rocket", name:"BONG ROCKET", emoji:"🚀", cd:42, load:5,  cap:8,  count:1, spread:0,    speed:9,  dmg:3, blast:56, recoil:2.4,  col:"#ff9be0", r:7, sound:"rocket" },
 };
 function curWeapon(){ return WEAPONS[weapon] || WEAPONS.joint; }
-function pickWeaponKind(){ const r=Math.random(); return r<0.40?"joint" : r<0.66?"shotgun" : r<0.87?"smg" : "rocket"; }
+function pickWeaponKind(){ const r=Math.random(); return r<0.40?"joint" : r<0.66?"laser" : r<0.87?"smg" : "rocket"; }
+
+// ---- 👑 SEASON-3 BOSS ROSTER: a rare cartel boss spawns from this set; each has its own look + attack ----
+// hp=hits · sp=initial speed range · chase=max chase speed · shoot=attack pattern · cdMin/Max=fire cadence
+const BOSSES = {
+  narco:   { name:"NARCO BOSS",    hp:6, sp:[0.7,1.2], chase:1.3, shoot:"single", cdMin:70, cdMax:110, suit:"#f0ece2", shade:"#d8d2c4", accent:"#ffd54a", skin:"#caa07a", hat:"sombrero" },
+  sicario: { name:"EL SICARIO",    hp:5, sp:[1.1,1.7], chase:2.1, shoot:"spread", cdMin:95, cdMax:140, suit:"#3f4a35", shade:"#2c3326", accent:"#9fe86a", skin:"#b98a5e", hat:"beret"    },
+  captain: { name:"DIRTY CAPTAIN", hp:5, sp:[0.9,1.4], chase:1.8, shoot:"fast",   cdMin:40, cdMax:66,  suit:"#16264a", shade:"#0e1a36", accent:"#ffd54a", skin:"#d3a984", hat:"police"   },
+  madrina: { name:"LA MADRINA",    hp:9, sp:[0.5,0.9], chase:1.0, shoot:"arc",    cdMin:78, cdMax:120, suit:"#3a2150", shade:"#27143a", accent:"#ffd54a", skin:"#caa07a", hat:"crown"    },
+};
+const BOSS_KEYS = Object.keys(BOSSES);
+function pickBossKind(){ return BOSS_KEYS[irnd(0, BOSS_KEYS.length-1)]; }
 
 // ---- gaps must ALWAYS be passable: a hop clears them w/o a bong, OR a reachable stepping-stone bridges them ----
 const SAFE_GAP = 140;              // px a standing run-jump clears with no boost (airtime≈40f × MOVE_SPD 4.5 ≈ 180, margin kept)
 const REACH_Y  = 120;              // tallest platform above ground a jump reaches (apex≈144) — kept below for an easy landing
 
 // ---- 🚁 KILL-STREAK air support: down this many cops without taking a hit → a chopper clears the street ----
-const CHOPPER_STREAK = 8;
-function chopperStreakNeed(){ return seasonMutator().key==="air" ? 6 : CHOPPER_STREAK; }
+const CHOPPER_STREAK = 30;
+function chopperStreakNeed(){ return seasonMutator().key==="air" ? 24 : CHOPPER_STREAK; }
 // 🌙 Moon-Gravity season twist — the twist can't change mid-run, so the scalar is cached once per run
 // into gravNow (resetWorld) and read on the physics hot path; this helper is the source of truth for it.
 function gravFor(){ return seasonMutator().key==="floaty" ? GRAVITY*0.80 : GRAVITY; }
@@ -393,11 +404,11 @@ const HALL_OF_FAME = [
 // ---- 🎲 SEASON TWIST — a deterministic weekly gameplay mutator so every new season feels fresh ----
 // Same season index → same twist for every player. Rotates each Sunday rollover. Keep effects fun & safe.
 const SEASON_MUTATORS = [
-  { key:"air",    emoji:"🚁", name:"AIR SUPPORT WEEK", desc:"kill streaks call the chopper SOONER (×6)" },
+  { key:"air",    emoji:"🚁", name:"AIR SUPPORT WEEK", desc:"kill streaks call the chopper SOONER (×24)" },
   { key:"kush",   emoji:"🌿", name:"DOUBLE KUSH",      desc:"every weed you grab is worth double" },
-  { key:"armory", emoji:"🔫", name:"FULL ARMORY",      desc:"start every run already holding a random gun" },
+  { key:"armory", emoji:"🔫", name:"ARMS DEALER WEEK", desc:"Blow Cannon gun crates drop way more often" },
   { key:"floaty", emoji:"🌙", name:"MOON GRAVITY",     desc:"lighter gravity — jump higher, float longer" },
-  { key:"rush",   emoji:"⚡", name:"RUSH HOUR",         desc:"start each run with a speed bong already lit" },
+  { key:"rush",   emoji:"⚡", name:"RUSH HOUR",         desc:"speed Bongs drop way more often" },
 ];
 function seasonMutator(){ const n=SEASON_MUTATORS.length; return SEASON_MUTATORS[((currentSeason()%n)+n)%n]; }
 // timed fetch — aborts a hung/slow Pantry after `ms` so a finish can never block for minutes
@@ -450,7 +461,8 @@ const CLOUD = {
   },
 };
 const Board = {
-  cache: [], status: "local", lastName: "", _flushing:false, _seasons:{}, profileBests:null,
+  cache: [], cacheAll: [], cacheSeason: [], view: "season",   // `cache` mirrors the active view; tabs flip view via setView()
+  status: "local", lastName: "", _flushing:false, _seasons:{}, profileBests:null,
   global(){ return CLOUD.configured(); },
   localAll(){ try{ return JSON.parse(localStorage.getItem("maria_scores")||"[]"); }catch(e){ return []; } },
   localSet(a){ try{ localStorage.setItem("maria_scores", JSON.stringify(a)); }catch(e){} },
@@ -461,18 +473,22 @@ const Board = {
   pendingAdd(e){ const p=this.pendingAll(); p.push(e); this.pendingSet(p); },
   eq(a,b){ return !!(a&&b) && a.name===b.name && Number(a.score)===Number(b.score) && (Number(a.ts)||0)===(Number(b.ts)||0); },
   remoteHas(list, e){ return (list||[]).some(r=> this.eq(r,e)); },
-  // unwrap remote payload into {scores(current season), season, seasons(archive map)}. NON-DESTRUCTIVE:
-  // a season rollover ARCHIVES the old board into seasons[oldSeason] instead of deleting everyone's scores.
-  // ALL-TIME board: fold the live scores AND every archived season bucket into one list — nothing is
-  // ever hidden by season. Every player's best run counts, forever, for this season and all seasons.
+  // which weekly season does a timestamp fall in? (same formula as currentSeason(), for any instant)
+  seasonOfTs(tMs){ tMs=Number(tMs)||0; if(!tMs) return null; return Math.round((seasonEndAt(tMs) - SEASON_REF_END) / WEEK_MS); },
+  // an entry's season: prefer its stamped field, else derive from its run timestamp (null = unknown / undatable)
+  entrySeason(e){ if (e && typeof e.season==="number" && isFinite(e.season)) return e.season; return this.seasonOfTs(e && e.ts); },
+  // unwrap the remote payload into {scores, season, seasons}. scores = the ALL-TIME board (live scores
+  // folded together with every per-week bucket → nothing is ever hidden by season). seasons = the per-week
+  // buckets {weekIndex: best-per-name that week} which feed the live SEASON board. NON-DESTRUCTIVE: a write
+  // only ADDS the writer's own runs to a bucket, so no player is ever dropped.
   unwrap(d){
-    let all=[];
+    let all=[], seasons={};
     if (Array.isArray(d)) all=d.slice();                              // legacy bare array
     else if (d && typeof d==="object"){
       if (Array.isArray(d.scores)) all=all.concat(d.scores);
-      if (d.seasons && typeof d.seasons==="object"){ for(const k in d.seasons){ if(Array.isArray(d.seasons[k])) all=all.concat(d.seasons[k]); } }
+      if (d.seasons && typeof d.seasons==="object"){ for(const k in d.seasons){ if(Array.isArray(d.seasons[k])){ all=all.concat(d.seasons[k]); seasons[k]=this.normalize(d.seasons[k]); } } }
     }
-    return { scores:this.normalize(all), season:currentSeason(), seasons:{} };
+    return { scores:this.normalize(all), season:currentSeason(), seasons:seasons };
   },
   pruneSeasons(seasons){                                              // bound basket size: keep the 30 most-recent archived seasons (~90 days)
     const keys=Object.keys(seasons||{}).map(Number).filter(n=>!isNaN(n)).sort((a,b)=>b-a);
@@ -491,6 +507,7 @@ const Board = {
       const name=(e.name||"???").toString().toUpperCase().slice(0,10) || "???";
       const cc=(typeof e.cc==="string") ? e.cc.toUpperCase().replace(/[^A-Z]/g,"").slice(0,2) : "";
       const ent={ name, cc, score:Math.max(0,Math.floor(e.score)), dist:Math.max(0,Math.floor(e.dist||0)), hidden:Math.max(0,Math.floor(e.hidden||0)), ts:e.ts||0 };
+      if (typeof e.season==="number" && isFinite(e.season)) ent.season=e.season;   // keep the week stamp so per-season buckets stay attributable
       const cur=best[name];
       if (!cur || this.rankVal(ent)>this.rankVal(cur)){ if(!ent.cc && cur && cur.cc) ent.cc=cur.cc; best[name]=ent; }   // a flag, once known, sticks to the name
       else if (!cur.cc && ent.cc) cur.cc=ent.cc;
@@ -510,8 +527,18 @@ const Board = {
   rebuild(payload){
     const remote=(payload&&Array.isArray(payload.scores))?payload.scores.slice():[];
     const prof=this.profileBests?Object.values(this.profileBests):[];
-    this.cache=this.normalize(remote.concat(this.localAll(), this.pendingAll(), prof));
+    const mine=this.localAll().concat(this.pendingAll());
+    // ALL-TIME board: every player's best run ever (live scores + this device + every account's profile-best)
+    this.cacheAll=this.normalize(remote.concat(mine, prof));
+    // SEASON board: only runs from the CURRENT week — the synced server bucket + any all-time best whose run
+    // fell this week + this device's own season runs (so it shows instantly, before the bucket has synced)
+    const cs=currentSeason(), inSeason=(e)=>this.entrySeason(e)===cs;
+    const bucket=(payload&&payload.seasons&&Array.isArray(payload.seasons[String(cs)]))?payload.seasons[String(cs)]:[];
+    this.cacheSeason=this.normalize(bucket.concat(remote.filter(inSeason), mine.filter(inSeason), prof.filter(inSeason)));
+    this.cache=this.view==="season"?this.cacheSeason:this.cacheAll;
   },
+  // flip the visible board between the live SEASON race and the ALL-TIME hall; reset the scroll
+  setView(v){ if (v!==this.view){ this.view=v; this.cache=(v==="season")?this.cacheSeason:this.cacheAll; boardScroll=0; boardScrollMax=0; boardRect=null; } },
   // turn every cloud profile (bank/best/bestDist) into a board entry — the reliable per-player "best" store
   async fetchProfileBests(){
     try{
@@ -580,11 +607,17 @@ const Board = {
     this.syncLocalUp(payload);                                                 // push this device's runs + every account's best the shared board is missing
     this.flushPending(payload);                                                // upload the pending queue (incl. what syncLocalUp just added)
   },
-  // write the ALL-TIME board: merge the server's scores with everyone's runs we hold (local + queued + extra),
-  // keep the single best per name, top 100. Never buckets/archives → nothing drops off by season.
+  // write BOTH boards: the ALL-TIME `scores` (best per name, top 100) and the per-week `seasons` buckets.
+  // Merge the server's data with every run we hold (local + queued + extra); keep best-per-name; never drop
+  // another player — buckets start from the server's and we only ADD our own device's runs to them.
   writeBody(payload, extra){
-    const all=((payload&&Array.isArray(payload.scores))?payload.scores:[]).concat(this.localAll(), this.pendingAll(), extra||[]);
-    return { scores:this.normalize(all), season:currentSeason(), seasons:{} };
+    const mine=this.localAll().concat(this.pendingAll(), extra||[]);
+    const scores=this.normalize(((payload&&Array.isArray(payload.scores))?payload.scores:[]).concat(mine));
+    const seasons={}, src=(payload&&payload.seasons&&typeof payload.seasons==="object")?payload.seasons:{};
+    for (const k in src){ if(Array.isArray(src[k])) seasons[k]=src[k].slice(); }                 // preserve every player's bucket
+    for (const e of mine){ const s=this.entrySeason(e); if(s===null||s===undefined||!isFinite(s)) continue; const k=String(s); (seasons[k]||(seasons[k]=[])).push(e); }
+    for (const k in seasons) seasons[k]=this.normalize(seasons[k]);                               // best-per-name within each week
+    return { scores:scores, season:currentSeason(), seasons:this.pruneSeasons(seasons) };
   },
   async write(body){ return await CLOUD.write("scores", body); },   // primary first, Pantry fallback (keepalive lets a finish complete after the page closes)
   // re-push every queued run the server doesn't have yet; drop from the queue ONLY once a read CONFIRMS it landed
@@ -1111,6 +1144,7 @@ const sfx = {
   shotgun(){ tone(150,0.16,"sawtooth",0.16,55); tone(520,0.06,"square",0.07,220,0.01); },
   smg(){ tone(680,0.045,"square",0.06,360); },
   rocket(){ tone(120,0.30,"sawtooth",0.16,40); tone(320,0.12,"square",0.08,90,0.02); },
+  laser(){ tone(1020,0.09,"square",0.06,520); tone(1500,0.05,"sine",0.05,2200,0.01); },
   chopper(){ [180,140,190,135,185].forEach((f,i)=>tone(f,0.10,"sawtooth",0.10,f*0.9,i*0.06)); tone(70,0.5,"square",0.06,55,0.02); },
   collect(){ tone(880,0.06,"square",0.09,1320); },
   stomp(){ tone(220,0.10,"sawtooth",0.12,90); },
@@ -1196,7 +1230,7 @@ const G = { scene:"intro", paused:false };
 let player, cam, platforms, pits, weeds, floatPickups, enemies, bongs, stars, cannons, wings, hiddens, projectiles, bossShots, particles, banners;
 let genX, score, lives, distance, frameCount, flash, hitTimer, dead, deadTimer, overReason;
 let speedTimer, starTimer, flyTimer, ammo, fireCd, level, levelFlash, hidden;
-let weapon, streak, chopper, gravNow;   // current gun key · kill-streak · active 🚁 air-support · per-run gravity scalar
+let weapon, streak, chopper, gravNow, twistKey;   // current gun key · kill-streak · active 🚁 air-support · per-run gravity scalar · cached season-twist key
 let chaseX, chaseSpeed, bribeUsed, hanging, hangTimer, hangX, slowmo, bossAlive, bossSpawnDist;
 let castleT, towerLevel;           // castle-entry cinematic timer; last level a KL-Towers obstacle spawned
 let petX, petY, petFlap, petPuffCd;   // 🦅 eagle companion: smoothed follow pos + wing-flap phase + smoke cooldown
@@ -1214,7 +1248,7 @@ function resetWorld(forDemo){
   genX=0; score=0; lives=3; distance=0; frameCount=0; flash=0; hitTimer=0; hidden=0;
   dead=false; deadTimer=0; overReason="busted";
   speedTimer=0; starTimer=0; flyTimer=0; ammo=0; fireCd=0; level=0; levelFlash=0;
-  weapon="joint"; streak=0; chopper=null; gravNow=gravFor();   // cache gravity once (off the physics hot path)
+  weapon="joint"; streak=0; chopper=null; gravNow=gravFor(); twistKey=seasonMutator().key;   // cache gravity + twist once (off the physics hot path)
   chaseX=-540; chaseSpeed=3.05; bribeUsed=false; hanging=false; hangTimer=0; hangX=0; slowmo=0;
   bossAlive=false; bossSpawnDist=320; castleT=0; towerLevel=-1;
   petX=player.x-70; petY=player.y-70; petFlap=0; petPuffCd=0;   // 🦅 eagle starts just behind/above
@@ -1231,10 +1265,8 @@ function startGame(){
     return;
   }
   resetWorld(false);
-  // 🎲 apply this season's twist to the fresh run
+  // 🎲 this season's twist — every run starts CLEAN (no guns, no boosters); twists tweak the world, never your start
   const mut=seasonMutator();
-  if (mut.key==="armory"){ const k=pickWeaponKind(); weapon=k; ammo=WEAPONS[k].load; }
-  if (mut.key==="rush"){ speedTimer=60*6; }
   touchCtl.clear(); stickId=null; hideJoy(); keys.jump=keys.left=keys.right=keys.fire=false;   // no stale held inputs from menu taps
   G.scene="play"; G.paused=false;
   if (ac() && actx.state==="suspended") actx.resume();
@@ -1376,14 +1408,14 @@ function generateSegment(){
     hiddens.push(mkHidden(hx, hy));
   }
 
-  // BONG speed
-  if (Math.random()<0.16 && sx>900){
+  // BONG speed — RUSH HOUR twist makes them far more common
+  if (Math.random()<(twistKey==="rush"?0.42:0.16) && sx>900){
     const bx=sx+irnd(60,SEG_W-60);
     if(!inPit(bx)) bongs.push({x:bx,y:GROUND_TOP-40,w:26,h:40,bob:rnd(0,6.28),taken:false});
   }
 
-  // BLOW CANNON pickup — each crate holds a different gun
-  if (Math.random()<0.13 && sx>1300){
+  // BLOW CANNON pickup — each crate holds a different gun. ARMS DEALER WEEK twist makes them far more common
+  if (Math.random()<(twistKey==="armory"?0.42:0.13) && sx>1300){
     const cx=sx+irnd(60,SEG_W-60);
     if(!inPit(cx)) cannons.push({x:cx,y:GROUND_TOP-34,w:40,h:34,bob:rnd(0,6.28),taken:false,kind:pickWeaponKind()});
   }
@@ -1430,7 +1462,9 @@ function mkEnemy(type, x){
   if (type==="cop_s")    return {...base,y:GROUND_TOP-38,w:30,h:38,vx:(Math.random()<.5?-1:1)*rnd(1.8,2.6),homeL:x-rnd(60,120),homeR:x+rnd(60,120)};
   if (type==="cop_big")  return {...base,y:GROUND_TOP-62,w:54,h:62,vx:(Math.random()<.5?-1:1)*rnd(.7,1.0),hp:2,homeL:x-rnd(40,80),homeR:x+rnd(40,80)};
   if (type==="cop_aggro")return {...base,y:GROUND_TOP-46,w:40,h:46,vx:(Math.random()<.5?-1:1)*rnd(1.2,1.6),aggro:true,homeL:x-rnd(70,140),homeR:x+rnd(70,140)};
-  /* boss */              return {...base,y:GROUND_TOP-82,w:74,h:82,vx:-rnd(.7,1.2),hp:6,maxHp:6,shootCd:80,homeL:x-300,homeR:x+300,boss:true};
+  /* boss */              { const bk=pickBossKind(), bd=BOSSES[bk];
+                            return {...base,y:GROUND_TOP-82,w:74,h:82,vx:-rnd(bd.sp[0],bd.sp[1]),hp:bd.hp,maxHp:bd.hp,
+                                    shootCd:irnd(bd.cdMin,bd.cdMax),homeL:x-300,homeR:x+300,boss:true,bossType:bk}; }
 }
 function mkWeed(x,y,floaty=false){ return {x,y,w:24,h:30,taken:false,bob:rnd(0,6.28),floaty}; }
 function mkStar(x,y){ return {x,y,w:32,h:32,taken:false,bob:rnd(0,6.28),t:rnd(0,6.28)}; }
@@ -1522,8 +1556,9 @@ function update(){
     const ox=player.x+(player.facing>0?player.w:-6), oy=player.y+player.h*0.42;
     for (let s=0;s<w.count;s++){
       const ang=(w.count>1 ? (s-(w.count-1)/2)*w.spread : (w.spread? rnd(-w.spread,w.spread):0));
-      const vx=player.facing*Math.cos(ang)*w.speed, vy=-1.1 + Math.sin(ang)*w.speed;
-      projectiles.push({x:ox,y:oy,vx,vy,life:64,dmg:w.dmg,blast:w.blast,r:w.r,col:w.col,kind:w.key});
+      const lift=(w.key==="laser")?0:-1.1;                              // laser flies dead straight; others arc up a touch
+      const vx=player.facing*Math.cos(ang)*w.speed, vy=lift + Math.sin(ang)*w.speed;
+      projectiles.push({x:ox,y:oy,vx,vy,life:(w.key==="laser"?52:64),dmg:w.dmg,blast:w.blast,r:w.r,col:w.col,kind:w.key,pierce:w.pierce||0});
     }
     puff(ox, oy, w.count>1?9:5, w.col, false);
     player.vx -= player.facing*w.recoil;
@@ -1611,12 +1646,20 @@ function resolveY(prevFeet){
 
 function updateProjectiles(){
   for (const j of projectiles){
-    j.x+=j.vx; j.vy+=0.05; j.y+=j.vy; j.life--;
-    if (frameCount%2===0) particles.push({x:j.x,y:j.y,vx:rnd(-.4,.4),vy:rnd(-.6,-.1),life:14,max:14,r:rnd(2,4),col:"rgba(220,220,220,.8)",kind:"smoke"});
+    const laser = j.kind==="laser";
+    j.x+=j.vx; if(!laser) j.vy+=0.05; j.y+=j.vy; j.life--;     // laser ignores gravity → dead straight
+    if (!laser && frameCount%2===0) particles.push({x:j.x,y:j.y,vx:rnd(-.4,.4),vy:rnd(-.6,-.1),life:14,max:14,r:rnd(2,4),col:"rgba(220,220,220,.8)",kind:"smoke"});
     for (const e of enemies){
       if (e.dead) continue;
       if (aabb({x:j.x-4,y:j.y-3,w:10,h:8}, e)){
         const src=j.fromChopper?"chopper":"joint";
+        if (laser){                                            // 🔆 laser dab pierces a whole LINE of enemies
+          if (!j.hit) j.hit=[];
+          if (j.hit.indexOf(e)>=0) continue;                   // already burned through this one
+          j.hit.push(e); damageEnemy(e, j.dmg||1, src); flash=Math.max(flash,4);
+          if (j.hit.length > (j.pierce||3)){ j.life=0; break; } // spent its pierce budget
+          continue;
+        }
         damageEnemy(e, j.dmg||1, src); flash=Math.max(flash,4);
         if (j.blast>0) rocketBlast(j.x, j.y, j.blast, src, e);   // 🚀 bong-rocket AoE (skips the direct-hit target)
         j.life=0; break;
@@ -1633,7 +1676,7 @@ function rocketBlast(x,y,r,src,hit){
 }
 function updateBossShots(invincible){
   for (const b of bossShots){
-    b.x+=b.vx; b.y+=b.vy; b.life--;
+    b.x+=b.vx; b.vy+=b.g||0; b.y+=b.vy; b.life--;   // g>0 → lobbed shot arcs downward
     if (frameCount%2===0) particles.push({x:b.x,y:b.y,vx:0,vy:0,life:8,max:8,r:2,col:"rgba(255,120,70,.6)",kind:"smoke"});
     if (hitTimer<=0 && !invincible && !dead && !hanging && aabb({x:b.x-4,y:b.y-4,w:8,h:8}, player)){ b.life=0; hurt(); }
   }
@@ -1649,17 +1692,21 @@ function updateEnemies(invincible){
       if (Math.abs(dx)<260 && Math.abs((player.y)-(e.y))<120){ e.vx=Math.sign(dx)*2.7; }
       else { if (e.x<e.homeL) e.vx=Math.abs(e.vx)||1.4; if (e.x>e.homeR) e.vx=-(Math.abs(e.vx)||1.4); }
     } else if (e.boss){
-      const dx=(player.x)-(e.x);
-      e.vx=clamp(dx*0.007, -1.7, 1.3);
-      // 🔫 narco boss shoots back — single aimed bullets
+      const bd=BOSSES[e.bossType]||BOSSES.narco;
+      const dx=(player.x)-(e.x), ch=bd.chase||1.4;
+      e.vx=clamp(dx*0.009, -ch, ch*0.8);
+      // 🔫 cartel boss shoots back — each type has its own attack
       if (e.shootCd>0) e.shootCd--;
       const onScreen = e.x>cam.x-40 && e.x<camRightX();
       if (e.shootCd<=0 && onScreen && !dead && !hanging){
         const sx0=e.x+e.w/2, sy0=e.y+e.h*0.42;
-        const tx=player.x+player.w/2-sx0, ty=player.y+player.h*0.5-sy0;
-        const d=Math.max(1,Math.hypot(tx,ty)), sp=5.2;
-        bossShots.push({x:sx0,y:sy0,vx:tx/d*sp,vy:ty/d*sp,life:150});
-        sfx.shoot(); e.shootCd=irnd(70,110); e.muzzle=6;
+        const baseAng=Math.atan2(player.y+player.h*0.5-sy0, player.x+player.w/2-sx0);
+        const fire=(ang,sp,g)=>bossShots.push({x:sx0,y:sy0,vx:Math.cos(ang)*sp,vy:Math.sin(ang)*sp,life:175,g:g||0});
+        if (bd.shoot==="spread"){ for(const o of [-0.24,0,0.24]) fire(baseAng+o,5.0); }   // El Sicario: 3-round fan
+        else if (bd.shoot==="fast"){ fire(baseAng,6.4); }                                  // Dirty Captain: quick straight shots
+        else if (bd.shoot==="arc"){ fire(baseAng-0.5,5.6,0.13); }                          // La Madrina: lobbed grenade (falls)
+        else { fire(baseAng,5.2); }                                                        // Narco Boss: single aimed bullet
+        sfx.shoot(); e.shootCd=irnd(bd.cdMin,bd.cdMax); e.muzzle=6;
       }
       if (e.muzzle>0) e.muzzle--;
     } else {
@@ -1690,8 +1737,9 @@ function damageEnemy(e,dmg,src){
   e.dead=true; e.squish= src==="stomp"?26:0;
   registerKill(src);
   if (e.boss){
+    const bd=BOSSES[e.bossType]||BOSSES.narco;
     bossAlive=false; const gain=lives<MAX_LIVES?1:0; lives=Math.min(MAX_LIVES,lives+1); score+=10; sfx.life(); flash=14; slowmo=24; screenShakeAdd(14);
-    addBanner("NARCO BOSS DOWN!", (gain?"+1 LIFE  ·  ":"MAX LIVES  ·  ")+"+10 kush", "#ffd54a", 170);
+    addBanner(bd.name+" DOWN!", (gain?"+1 LIFE  ·  ":"MAX LIVES  ·  ")+"+10 kush", "#ffd54a", 170);
     for(let i=0;i<26;i++) particles.push({x:e.x+e.w/2,y:e.y+e.h/2,vx:rnd(-5,5),vy:rnd(-7,1),life:irnd(30,55),max:55,r:rnd(3,7),col:`hsl(${irnd(0,360)} 90% 60%)`,kind:"spark"});
     for(let i=0;i<5;i++) weeds.push(mkWeed(e.x+rnd(-10,e.w),GROUND_TOP-34));
   } else {
@@ -1730,10 +1778,10 @@ function updateChopper(){
       for(const e of enemies){ if(e.dead)continue; if(e.x<cam.x-20||e.x>camRightX()+20)continue;
         const d=Math.abs(e.x-ch.x); if(d<bd){bd=d;tgt=e;} }
       if (tgt){
-        const sx0=ch.x+10, sy0=ch.y+16, dx=(tgt.x+tgt.w/2)-sx0, dy=(tgt.y+tgt.h*0.4)-sy0, d=Math.max(1,Math.hypot(dx,dy)), sp=15;
-        projectiles.push({x:sx0,y:sy0,vx:dx/d*sp,vy:dy/d*sp,life:55,dmg:2,blast:0,r:4,col:"#ffd54a",kind:"chopper",fromChopper:true});
-        sfx.shoot(); ch.muzzle=5; ch.fireCd=9;
-      } else ch.fireCd=14;
+        const sx0=ch.x+10, sy0=ch.y+16, dx=(tgt.x+tgt.w/2)-sx0, dy=(tgt.y+tgt.h*0.4)-sy0, d=Math.max(1,Math.hypot(dx,dy)), sp=20;
+        projectiles.push({x:sx0,y:sy0,vx:dx/d*sp,vy:dy/d*sp,life:55,dmg:3,blast:0,r:4,col:"#ffd54a",kind:"chopper",fromChopper:true});  // fast + hard-hitting → accurate, fewer needed
+        sfx.shoot(); ch.muzzle=6; ch.fireCd=26;       // slower cadence → far fewer bullets
+      } else ch.fireCd=22;
     }
   } else {
     ch.x+=11; ch.y-=2.6;                         // life over → bank away up-and-right
@@ -2338,24 +2386,48 @@ function drawBong(x,y){
   ctx.drawImage(bongSprite(), x-3, y-3);
   ctx.fillStyle="rgba(255,255,255,.5)"; for(let i=0;i<3;i++){ ctx.beginPath(); ctx.arc(x+13,y-4-i*7+Math.sin(frameCount*0.1+i)*2,3+i,0,6.28); ctx.fill(); }
 }
-let _cannonSpr=null;
-function cannonSprite(){
-  return _cannonSpr || (_cannonSpr=makeSprite(48,30,c=>{
+// each gun has its OWN pickup image (built once, cached) so you can tell at a glance what you're grabbing
+const _gunSpr={};
+function gunSprite(kind){
+  if (_gunSpr[kind]) return _gunSpr[kind];
+  const w=WEAPONS[kind]||WEAPONS.joint;
+  return _gunSpr[kind]=makeSprite(48,30,c=>{
     c.translate(1,2);
-    c.fillStyle="#3a3a3a"; roundRect(2,8,30,16,6,c); c.fill();             // barrel
-    c.fillStyle="#7CFC6A"; roundRect(0,12,12,10,4,c); c.fill();            // grip/tank
-    c.fillStyle="#222"; c.fillRect(30,12,8,8);                             // muzzle
-    c.fillStyle="#fff"; c.fillRect(34,13,8,3); c.fillStyle="#ff7a2a"; c.fillRect(42,13,2,3); // loaded joint
-  }));
+    if (kind==="rocket"){                                  // 🚀 shoulder launcher with a rocket poking out
+      c.fillStyle="#454b52"; roundRect(2,9,32,12,5,c); c.fill();
+      c.fillStyle="#2a2e33"; c.fillRect(0,11,8,9);
+      c.fillStyle="#1c1f23"; c.fillRect(6,21,7,5);
+      c.fillStyle="#777"; c.fillRect(33,8,3,14);
+      c.fillStyle=w.col; c.beginPath(); c.moveTo(36,15); c.lineTo(46,11); c.lineTo(46,19); c.closePath(); c.fill();
+      c.fillStyle="#ffd54a"; c.fillRect(10,7,7,2);
+    } else if (kind==="smg"){                              // ⚡ compact boxy SMG with a magazine
+      c.fillStyle="#2f3338"; c.fillRect(4,8,24,9);
+      c.fillStyle="#43484e"; c.fillRect(26,9,14,5);
+      c.fillStyle="#16181b"; c.fillRect(11,17,6,11);
+      c.fillStyle="#16181b"; c.fillRect(4,16,5,8);
+      c.fillStyle=w.col; c.fillRect(6,6,17,2);
+    } else if (kind==="laser"){                            // 🔆 sleek energy emitter with glowing coils
+      c.fillStyle="#203038"; roundRect(2,9,30,12,6,c); c.fill();
+      c.fillStyle="#2c4450"; c.fillRect(0,12,8,7);
+      c.fillStyle=w.col; c.fillRect(12,11,3,8); c.fillRect(18,11,3,8); c.fillRect(24,11,3,8);
+      c.shadowColor=w.col; c.shadowBlur=6;
+      c.fillStyle="#eafff5"; c.beginPath(); c.arc(37,15,4,0,6.28); c.fill();
+      c.shadowBlur=0; c.fillStyle=w.col; c.beginPath(); c.arc(37,15,2.2,0,6.28); c.fill();
+    } else {                                               // 🚬 the classic Blow Cannon (joints)
+      c.fillStyle="#3a3a3a"; roundRect(2,8,30,16,6,c); c.fill();
+      c.fillStyle="#7CFC6A"; roundRect(0,12,12,10,4,c); c.fill();
+      c.fillStyle="#222"; c.fillRect(30,12,8,8);
+      c.fillStyle="#fff"; c.fillRect(34,13,8,3); c.fillStyle="#ff7a2a"; c.fillRect(42,13,2,3);
+    }
+  });
 }
 function drawCannon(x,y,kind){
-  const w=WEAPONS[kind]||WEAPONS.joint;
-  ctx.drawImage(cannonSprite(), x-1, y-2);
-  // colour patch + floating emoji so each gun crate reads differently
+  kind=kind||"joint"; const w=WEAPONS[kind]||WEAPONS.joint;
+  ctx.drawImage(gunSprite(kind), x-1, y-2);
+  // floating emoji label above the crate so the gun reads at a glance
   ctx.save();
-  ctx.globalAlpha=0.55; ctx.fillStyle=w.col; roundRect(x-1,y-2,13,12,4); ctx.fill(); ctx.globalAlpha=1;
-  ctx.font="14px serif"; ctx.textAlign="center"; ctx.textBaseline="middle";
-  ctx.fillText(w.emoji, x+20, y-10-Math.sin(frameCount*0.1)*1.5);
+  ctx.font="14px serif"; ctx.textAlign="center"; ctx.textBaseline="middle"; ctx.fillStyle="#fff";
+  ctx.fillText(w.emoji, x+20, y-12-Math.sin(frameCount*0.1)*1.5);
   ctx.restore(); ctx.textAlign="left"; ctx.textBaseline="alphabetic";
   ctx.fillStyle="rgba(255,255,255,.5)"; ctx.beginPath(); ctx.arc(x+46,y+12-Math.sin(frameCount*0.1)*2,3,0,6.28); ctx.fill();
 }
@@ -2384,6 +2456,37 @@ function drawCaliStar(x,y,t){
 function drawProjectiles(){
   for(const j of projectiles){
     const dir=j.vx>0?1:-1;
+    if (j.kind==="laser"){                                       // 🔆 glowing energy bolt
+      ctx.save(); ctx.translate(j.x,j.y); ctx.rotate(Math.atan2(j.vy,j.vx));
+      ctx.shadowColor=j.col||"#7CFFCB"; ctx.shadowBlur=10;
+      ctx.fillStyle=j.col||"#7CFFCB"; roundRect(-13,-2.2,26,4.4,2.2); ctx.fill();
+      ctx.fillStyle="#f2fff9"; roundRect(-7,-1,15,2,1); ctx.fill();
+      ctx.shadowBlur=0; ctx.restore(); continue;
+    }
+    if (j.kind==="smg"){                                         // ⚡ fast little energy pellet + tracer
+      ctx.save(); ctx.translate(j.x,j.y); ctx.rotate(Math.atan2(j.vy,j.vx));
+      ctx.strokeStyle="rgba(159,232,255,.5)"; ctx.lineWidth=2; ctx.beginPath(); ctx.moveTo(-10,0); ctx.lineTo(2,0); ctx.stroke();
+      ctx.shadowColor=j.col||"#9fe8ff"; ctx.shadowBlur=7;
+      ctx.fillStyle=j.col||"#9fe8ff"; ctx.beginPath(); ctx.ellipse(2,0,4.5,2.3,0,0,6.28); ctx.fill();
+      ctx.fillStyle="#fff"; ctx.beginPath(); ctx.arc(2,0,1.4,0,6.28); ctx.fill();
+      ctx.shadowBlur=0; ctx.restore(); continue;
+    }
+    if (j.kind==="rocket"){                                      // 🚀 little missile with a flame tail
+      if(frameCount%2===0) particles.push({x:j.x-dir*7,y:j.y,vx:rnd(-.5,.5),vy:rnd(-.4,.4),life:14,max:14,r:rnd(2,4),col:"rgba(255,150,90,.55)",kind:"smoke"});
+      ctx.save(); ctx.translate(j.x,j.y); ctx.scale(dir,1);
+      ctx.fillStyle= frameCount%4<2?"#ffd24a":"#ff7a2a"; ctx.beginPath(); ctx.moveTo(-7,0); ctx.lineTo(-13,-2.6); ctx.lineTo(-11,0); ctx.lineTo(-13,2.6); ctx.closePath(); ctx.fill();
+      ctx.fillStyle=j.col||"#ff9be0"; roundRect(-7,-3,12,6,2); ctx.fill();
+      ctx.fillStyle="#ffd54a"; ctx.beginPath(); ctx.moveTo(5,-3); ctx.lineTo(10,0); ctx.lineTo(5,3); ctx.closePath(); ctx.fill();
+      ctx.fillStyle="#c95aa0"; ctx.beginPath(); ctx.moveTo(-6,-3); ctx.lineTo(-9,-5.5); ctx.lineTo(-3.5,-3); ctx.closePath(); ctx.fill();
+      ctx.restore(); continue;
+    }
+    if (j.kind==="chopper"){                                     // 🚁 air-support gold tracer
+      ctx.save(); ctx.translate(j.x,j.y); ctx.rotate(Math.atan2(j.vy,j.vx));
+      ctx.shadowColor="#ffd54a"; ctx.shadowBlur=8;
+      ctx.fillStyle="#ffd54a"; roundRect(-8,-2,16,4,2); ctx.fill();
+      ctx.fillStyle="#fff7d0"; roundRect(-3,-1,8,2,1); ctx.fill();
+      ctx.shadowBlur=0; ctx.restore(); continue;
+    }
     if(frameCount%2===0) particles.push({x:j.x-dir*9,y:j.y-2,vx:rnd(-.4,.4),vy:rnd(-.7,-.1),life:16,max:16,r:rnd(2,4),col:"rgba(225,225,225,.7)",kind:"smoke"});
     ctx.save(); ctx.translate(j.x,j.y); ctx.scale(dir,1);
     // fat tapered joint (thin crutch at back → fat at the burning tip)
@@ -2454,31 +2557,46 @@ function drawCop(e){
   if (e.hp>1 && !dead){ ctx.fillStyle="#000"; ctx.fillRect(x,y-8,w,4); ctx.fillStyle="#ff5a5a"; ctx.fillRect(x,y-8,w*(e.hp/2),4); }
 }
 function drawBoss(e){
-  const x=e.x,y=e.y,w=e.w,h=e.h, dead=e.dead;
+  const bd=BOSSES[e.bossType]||BOSSES.narco;
+  const x=e.x,y=e.y,w=e.w,h=e.h, dead=e.dead, cxp=x+w/2;
   ctx.save();
   if(dead){ const sq=clamp(e.squish/10,0,1); ctx.translate(x+w/2,y+h); ctx.scale(1,1-sq*0.6); ctx.translate(-(x+w/2),-(y+h)); }
-  ctx.fillStyle="rgba(0,0,0,.22)"; ctx.beginPath(); ctx.ellipse(x+w/2,y+h+2,w*.5,6,0,0,6.28); ctx.fill();
-  // white suit
-  ctx.fillStyle="#f0ece2"; ctx.fillRect(x+6,y+22,w-12,h-22);
-  ctx.fillStyle="#d8d2c4"; ctx.fillRect(x+6,y+22,(w-12)/2,h-22);
-  // gold chains
-  ctx.strokeStyle="#ffd54a"; ctx.lineWidth=3; ctx.beginPath(); ctx.arc(x+w/2,y+28,10,0.1,Math.PI-0.1); ctx.stroke();
-  ctx.fillStyle="#ffd54a"; ctx.fillRect(x+w/2-3,y+36,6,6);
-  // head + big hat
-  ctx.fillStyle="#caa07a"; ctx.beginPath(); ctx.arc(x+w/2,y+16,13,0,6.28); ctx.fill();
-  ctx.fillStyle="#2a1d12"; ctx.fillRect(x+w/2-20,y+6,40,5); ctx.fillRect(x+w/2-12,y-2,24,9);
-  ctx.fillStyle="#7a1f1f"; ctx.fillRect(x+w/2-20,y+5,40,2);
-  // shades + cigar
-  ctx.fillStyle="#111"; ctx.fillRect(x+w/2-10,y+13,20,5);
-  ctx.fillStyle="#7a4a22"; ctx.fillRect(x+w/2+6,y+22,12,3); ctx.fillStyle="#ff7a2a"; ctx.fillRect(x+w/2+18,y+22,3,3);
-  if(!dead){ ctx.fillStyle="rgba(255,255,255,.5)"; ctx.beginPath(); ctx.arc(x+w/2+24,y+18-Math.sin(frameCount*0.12)*3,3,0,6.28); ctx.fill(); }
+  ctx.fillStyle="rgba(0,0,0,.22)"; ctx.beginPath(); ctx.ellipse(cxp,y+h+2,w*.5,6,0,0,6.28); ctx.fill();
+  // suit (per-boss colour) with a shaded half
+  ctx.fillStyle=bd.suit; ctx.fillRect(x+6,y+22,w-12,h-22);
+  ctx.fillStyle=bd.shade; ctx.fillRect(x+6,y+22,(w-12)/2,h-22);
+  // accent chain + medallion
+  ctx.strokeStyle=bd.accent; ctx.lineWidth=3; ctx.beginPath(); ctx.arc(cxp,y+28,10,0.1,Math.PI-0.1); ctx.stroke();
+  ctx.fillStyle=bd.accent; ctx.fillRect(cxp-3,y+36,6,6);
+  // head
+  ctx.fillStyle=bd.skin; ctx.beginPath(); ctx.arc(cxp,y+16,13,0,6.28); ctx.fill();
+  // headgear — the silhouette that tells the bosses apart
+  if (bd.hat==="sombrero"){                                       // 🤠 Narco Boss — wide brown sombrero
+    ctx.fillStyle="#2a1d12"; ctx.fillRect(cxp-20,y+6,40,5); ctx.fillRect(cxp-12,y-2,24,9);
+    ctx.fillStyle="#7a1f1f"; ctx.fillRect(cxp-20,y+5,40,2);
+  } else if (bd.hat==="beret"){                                   // 🎖 El Sicario — tilted military beret
+    ctx.fillStyle="#20271a"; ctx.beginPath(); ctx.arc(cxp+1,y+5,12,Math.PI,0); ctx.fill(); ctx.fillRect(cxp-11,y+4,24,3);
+    ctx.fillStyle=bd.accent; ctx.beginPath(); ctx.arc(cxp+9,y+2,2.4,0,6.28); ctx.fill();
+  } else if (bd.hat==="police"){                                  // 🚓 Dirty Captain — navy peaked cap + badge
+    ctx.fillStyle=bd.shade; ctx.beginPath(); ctx.arc(cxp,y+6,12,Math.PI,0); ctx.fill(); ctx.fillRect(cxp-13,y+5,26,4);
+    ctx.fillStyle=bd.accent; ctx.fillRect(cxp-5,y+1,10,3);
+  } else if (bd.hat==="crown"){                                   // 👑 La Madrina — jagged gold crown
+    ctx.fillStyle=bd.accent; ctx.beginPath();
+    ctx.moveTo(cxp-13,y+6); ctx.lineTo(cxp-13,y-4); ctx.lineTo(cxp-7,y+1); ctx.lineTo(cxp,y-7);
+    ctx.lineTo(cxp+7,y+1); ctx.lineTo(cxp+13,y-4); ctx.lineTo(cxp+13,y+6); ctx.closePath(); ctx.fill();
+    ctx.fillStyle="#ff5a8a"; ctx.beginPath(); ctx.arc(cxp,y+2,2.2,0,6.28); ctx.fill();
+  }
+  // shades + cigar + smoke
+  ctx.fillStyle="#111"; ctx.fillRect(cxp-10,y+13,20,5);
+  ctx.fillStyle="#7a4a22"; ctx.fillRect(cxp+6,y+22,12,3); ctx.fillStyle="#ff7a2a"; ctx.fillRect(cxp+18,y+22,3,3);
+  if(!dead){ ctx.fillStyle="rgba(255,255,255,.5)"; ctx.beginPath(); ctx.arc(cxp+24,y+18-Math.sin(frameCount*0.12)*3,3,0,6.28); ctx.fill(); }
   // pistol + muzzle flash when shooting
   if(!dead){ const gy0=y+h*0.42, gx0=x-2; ctx.fillStyle="#222"; ctx.fillRect(gx0-8,gy0-2,10,5);
     if(e.muzzle>0){ ctx.fillStyle="#ffd24a"; ctx.beginPath(); ctx.moveTo(gx0-8,gy0); ctx.lineTo(gx0-18,gy0-4); ctx.lineTo(gx0-14,gy0); ctx.lineTo(gx0-18,gy0+4); ctx.closePath(); ctx.fill(); } }
   ctx.restore();
-  // hp bar + crown label
+  // hp bar + boss name label
   if(!dead){ const mh=e.maxHp||6; ctx.fillStyle="#000"; ctx.fillRect(x-4,y-12,w+8,5); ctx.fillStyle="#ff4d4d"; ctx.fillRect(x-4,y-12,(w+8)*clamp(e.hp/mh,0,1),5);
-    ctx.fillStyle="#ffd54a"; ctx.font="bold 10px 'Trebuchet MS'"; ctx.textAlign="center"; ctx.fillText("NARCO BOSS",x+w/2,y-16); ctx.textAlign="left"; }
+    ctx.fillStyle=bd.accent; ctx.font="bold 10px 'Trebuchet MS'"; ctx.textAlign="center"; ctx.fillText(bd.name,cxp,y-16); ctx.textAlign="left"; }
 }
 
 // ----- player (skins + animation) -----
@@ -2813,36 +2931,49 @@ function drawCastleEntry(){
 }
 
 // ----- HUD -----
-// ----- 👑 Narco-Boss proximity hint — deliberately quiet: a faint pill that fades in as you
-// close the distance, with a small chevron drifting toward him. Hidden once he's on screen. -----
+// ----- 👑 Cartel-Boss approach arrow — a BIG directional arrow that points straight at the boss and
+// grows + brightens as you close in. Flips backward once you run past him. Hidden once he's on screen. -----
 const BOSS_METER_RANGE = 3000;                  // world px (= 300 m); beyond this, no hint at all
 function drawBossMeter(){
   if (dead || hanging || castleT>0) return;
   const b = enemies.find(e=> e.boss && !e.dead);
   if (!b) return;
   const dx = (b.x+b.w/2) - (player.x+player.w/2);
+  const dy = (b.y+b.h/2) - (player.y+player.h/2);
   if (Math.abs(dx) > BOSS_METER_RANGE) return;
-  if (b.x+b.w > cam.x && b.x < camRightX()) return;   // boss already visible — the meter would be noise
-  drawBossMeterAt(dx);
+  if (b.x+b.w > cam.x && b.x < camRightX()) return;   // boss already on screen — no need to point at it
+  drawBossMeterAt(dx, dy);
 }
-// pure screen-space draw (dx = boss − player in world px) — separate so it can be checked in isolation
-function drawBossMeterAt(dx){
+// pure screen-space draw (dx,dy = boss − player in world px) — separate so it can be checked in isolation
+function drawBossMeterAt(dx, dy){
+  dy = dy || 0;
   const m = Math.max(1, Math.round(Math.abs(dx)/10));
   const closeness = clamp(1 - m/(BOSS_METER_RANGE/10), 0, 1);
-  const a = (0.30 + 0.45*closeness) * (0.92 + 0.08*Math.sin(frameCount*0.07));   // closer = clearer, with a slow breathe
+  const pulse = 0.85 + 0.15*Math.sin(frameCount*0.18);
+  const a = clamp(0.6 + 0.4*closeness, 0, 1) * pulse;        // far ≈ 0.6, point-blank ≈ 1.0 → clearly visible
   const dir = dx>=0 ? 1 : -1;
-  const cx = VW/2, y = uiPortrait ? 104+safeTop : (VW<720 ? 78+safeTop : 64);   // upright: pill (±9) clears the button row
+  const ang = Math.atan2(dy, dx);                            // true bearing → naturally points backward once passed
+  const cx = VW/2, y = uiPortrait ? 100+safeTop : (VW<720 ? 88+safeTop : 70);
+  const sz = 18 + 30*closeness;                             // arrow grows as you get closer
+  const ax = cx + dir*(54 + 46*closeness);                  // sits on the boss's side of the screen
   ctx.save(); ctx.globalAlpha=a;
-  ctx.font="bold 11px 'Trebuchet MS'"; ctx.textBaseline="middle";
-  const label="👑 "+m+"m";
-  const tw=ctx.measureText(label).width, pw=tw+34;
-  ctx.fillStyle="rgba(8,12,24,.42)"; roundRect(cx-pw/2, y-9, pw, 18, 9); ctx.fill();
-  ctx.fillStyle="#ffd54a";
-  ctx.textAlign= dir>0 ? "left" : "right";
-  ctx.fillText(label, dir>0 ? cx-pw/2+8 : cx+pw/2-8, y+0.5);
-  const ax=(dir>0 ? cx+pw/2-11 : cx-pw/2+11) + Math.sin(frameCount*0.12)*1.5*dir;   // chevron, faint drift toward him
-  ctx.beginPath(); ctx.moveTo(ax+4*dir,y); ctx.lineTo(ax-3*dir,y-4.5); ctx.lineTo(ax-3*dir,y+4.5); ctx.closePath(); ctx.fill();
-  ctx.restore();
+  // distance pill (centred)
+  const fs=Math.round(12 + 3*closeness);
+  ctx.font="bold "+fs+"px 'Trebuchet MS'"; ctx.textBaseline="middle"; ctx.textAlign="center";
+  const label="👑 "+m+"m", tw=ctx.measureText(label).width, pw=tw+20;
+  ctx.fillStyle="rgba(8,12,24,.6)"; roundRect(cx-pw/2, y-12, pw, 24, 12); ctx.fill();
+  ctx.fillStyle="#ffd54a"; ctx.fillText(label, cx, y+0.5);
+  // the big glowing arrow, rotated to point AT the boss
+  ctx.translate(ax, y); ctx.rotate(ang);
+  ctx.shadowColor="#ff3b3b"; ctx.shadowBlur=8 + 12*closeness;
+  ctx.fillStyle="#ffd54a"; ctx.strokeStyle="#9a2f12"; ctx.lineWidth=2; ctx.lineJoin="round";
+  const L=sz, t=sz*0.22, hw=sz*0.42;
+  ctx.beginPath();
+  ctx.moveTo(-L*0.65,-t); ctx.lineTo(L*0.15,-t); ctx.lineTo(L*0.15,-hw);
+  ctx.lineTo(L*0.85,0);
+  ctx.lineTo(L*0.15,hw); ctx.lineTo(L*0.15,t); ctx.lineTo(-L*0.65,t);
+  ctx.closePath(); ctx.fill(); ctx.stroke();
+  ctx.shadowBlur=0; ctx.restore(); ctx.textAlign="left"; ctx.textBaseline="alphabetic";
 }
 function drawHUDCompact(){
   ctx.save();
@@ -2912,7 +3043,7 @@ function drawHUD(){
   ctx.fillStyle=col; roundRect(mx,my+14,mw*frac,10,5); ctx.fill();
   ctx.font="11px 'Trebuchet MS'"; ctx.fillStyle="rgba(255,255,255,.8)"; ctx.fillText("BANK "+DB.bank+"🌿",mx,my+40);
   ctx.fillStyle="#ffd54a"; ctx.fillText("YOUR BEST "+DB.best+"🌿",mx,my+56);
-  const top=Board.cache[0];
+  const top=Board.cacheAll[0];                         // the all-time GOAT to chase
   ctx.fillStyle="#9fe89f"; ctx.fillText(top? ("👑 "+top.name+" "+top.score+"🌿") : "👑 be the first!", mx, my+72);
   ctx.textBaseline="alphabetic";
   ctx.restore();
@@ -3090,7 +3221,7 @@ function drawIntro(){
     ctx.fillText("⚡ SEASON "+seasonLabel()+" HAS STARTED ⚡", 0, 0); ctx.restore(); ctx.shadowBlur=0; }
   // 9) 🏆 WALL OF FAME — Season 1 & 2 champions immortalised + the LIVE Season 3 leader, then this season's twist
   if (T>64){ const a=clamp((T-64)/20,0,1); ctx.save(); ctx.globalAlpha=a; ctx.textAlign="center";
-    const champ=(Board.cache&&Board.cache.length)?Board.cache[0]:null;
+    const champ=(Board.cacheSeason&&Board.cacheSeason.length)?Board.cacheSeason[0]:null;   // the LIVE leader of THIS season
     const rows=HALL_OF_FAME.map(h=>({s:h.season,name:h.name,live:false}));
     rows.push({s:seasonLabel(), name:(champ?champ.name:"… be the first!"), live:true});
     const medals=["🥇","🥈","🥉","🏅"];
@@ -3112,7 +3243,7 @@ function drawIntro(){
   if (T>92){ ctx.save(); ctx.globalAlpha=0.55+0.45*Math.sin(T*0.16); ctx.textAlign="center";
     ctx.fillStyle="#fff"; ctx.font="bold 16px 'Trebuchet MS'"; ctx.fillText("tap / press ENTER to play", VW/2, VH-26); ctx.restore(); }
   ctx.textAlign="left"; ctx.globalAlpha=1;
-  if (T>330) leaveIntro();
+  // intro NEVER auto-advances — it waits for a tap / click / ENTER (handled in handleClick + keydown)
 }
 
 // ===== first-launch onboarding: how to get TRUE fullscreen + best rotation =====
@@ -3166,13 +3297,13 @@ const GUIDE_BLOCKS = [
      "🌿 Kush leaf — +1 point. This is BOTH your score and your shop money.",
      "💨 Bong — speed boost for about 7 seconds.",
      "⭐ Cali Star — invincible for about 8 seconds: smash through enemies and shrug off hits.",
-     "🔫 Blow Cannon — picks up a GUN. Each crate holds a different one: 🚬 Joints (steady), 🌿 Blunt Shells (shotgun spread), ⚡ Vape SMG (rapid fire), 🚀 Bong Rocket (explodes a whole group). Press F / 🚬 to fire.",
+     "🔫 Blow Cannon — picks up a GUN. Each one has its own pickup image so you know what you grabbed: 🚬 Joints (steady), 🔆 Laser Dab (pierces a whole line), ⚡ Vape SMG (rapid fire), 🚀 Bong Rocket (explodes a whole group). Press F / 🚬 to fire.",
      "🪽 Kush Wings — fly for about 7 seconds: hold JUMP to soar.",
      "…and there are secret hidden pick-ups that quietly boost your leaderboard rank." ]},
   { h:"👮  NARCS & THE BOSS", c:"#ff9d6b", body:[
      "Narcs patrol the streets and some will chase you. Touch one and you get hurt — so STOMP them cleanly from above or SHOOT them.",
      "🚁 KILL STREAK: take down 8 narcs without getting hit and a Kush chopper flies in to strafe the street for you. Get hit and the streak resets.",
-     "The Narco Boss shoots back. Take it down for +1 LIFE and +10 🌿." ]},
+     "Season 3 cartel bosses shoot back — the 🤠 Narco Boss, 🎖 El Sicario (3-round fan), 🚓 Dirty Captain (rapid fire) & 👑 La Madrina (lobbed bombs) each fight differently. A big 👑 arrow points the way in. Take any of them down for +1 LIFE and +10 🌿." ]},
   { h:"❤️  LIVES — max 3", c:"#ff7bd0", body:[
      "You start with 3. You lose one when the cops bust you, a narc or a bullet hits you, or you fall into a pit or lava. Beating the boss earns one back." ]},
   { h:"🏆  POINTS & LEADERBOARD", c:"#9fe89f", body:[
@@ -3384,6 +3515,25 @@ function drawBoard(x, y, w, h, total, hiName){
     ctx.fillStyle="rgba(124,252,106,.6)";  roundRect(trackX,thumbY,3,thumbH,1.5); ctx.fill();
   }
 }
+// two-tab switch above the high-score box: 🏁 SEASON N (this week's race) ⇄ 🏆 ALL-TIME (hall of fame).
+// Centered on cx; registers a uiButton hotspot per tab (taps flip Board.view). Returns the tab-row bottom y.
+function drawBoardTabs(cx, y, sm){
+  const tabs=[ {v:"season", t:"🏁 SEASON "+seasonLabel()}, {v:"all", t:"🏆 ALL-TIME"} ];
+  const fs=sm?11:13, pad=sm?9:13, gap=6, h=sm?21:25;
+  ctx.font="bold "+fs+"px 'Trebuchet MS'"; ctx.textBaseline="middle";
+  const ws=tabs.map(t=>Math.ceil(ctx.measureText(t.t).width)+pad*2);
+  let bx=cx-(ws[0]+ws[1]+gap)/2;
+  for (let i=0;i<tabs.length;i++){
+    const t=tabs[i], w=ws[i], on=Board.view===t.v;
+    ctx.fillStyle= on?"rgba(124,252,106,.22)":"rgba(255,255,255,.06)"; roundRect(bx,y,w,h,8); ctx.fill();
+    ctx.strokeStyle= on?"#7CFC6A":"rgba(255,255,255,.20)"; ctx.lineWidth=1.5; roundRect(bx,y,w,h,8); ctx.stroke();
+    ctx.fillStyle= on?"#eaffea":"#9fb4d6"; ctx.textAlign="center"; ctx.fillText(t.t, bx+w/2, y+h/2+0.5);
+    const v=t.v; uiButtons.push({x:bx, y, w, h, action:()=>Board.setView(v)});
+    bx+=w+gap;
+  }
+  ctx.textBaseline="alphabetic"; ctx.textAlign="left";
+  return y+h;
+}
 // master-mute toggle button (canvas) — registers a uiButton hotspot like every other menu button
 function drawSoundButton(x, y, w, h){
   button(x, y, w||34, h||28, muted?"🔇":"🔊", toggleMute, "rgba(8,12,24,.62)");
@@ -3409,8 +3559,7 @@ function drawTitle(){
   const pad=18, w=Math.min(wide?920:460, VW-2*pad), x0=(VW-w)/2, cx=VW/2;
   panel(x0, 12, w, VH-24);
   drawLogo(cx, wide?78:60, Math.min(wide?0.5:0.42, w/(wide?1060:560)), frameCount);
-  ctx.textAlign="center"; ctx.fillStyle="#dfe9ff"; ctx.font=(wide?"12px":"10px")+" 'Trebuchet MS'";
-  ctx.fillText("🌿 kush · 🏃 outrun cops · 💵 bribe@100 · 🪽 wings · 🏰 Kush Castles", cx, wide?150:130);
+  ctx.textAlign="center";
   { const _mut=seasonMutator(); ctx.fillStyle="#9fe8ff"; ctx.font=(wide?"bold 12px":"bold 9px")+" 'Trebuchet MS'";
     ctx.fillText(_mut.emoji+" SEASON "+seasonLabel()+" TWIST: "+_mut.name, cx, wide?168:144); }
   const empty=!(DB.name&&DB.name.trim());
@@ -3431,11 +3580,11 @@ function drawTitle(){
     button(Lx+colW/2+4, 416, colW/2-4, 38, "💬  CHAT", ()=>openChat(), "rgba(88,166,255,.18)");
     ctx.textAlign="center"; ctx.fillStyle="#8298ba"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText("← → run · SPACE jump · F shoot", Lcx, 470);
     linkText("ℹ️  How to play fullscreen", Lcx, 494, ()=>{ G.scene="howto"; });
-    ctx.fillStyle="#ffd54a"; ctx.font="bold 18px 'Trebuchet MS'"; ctx.fillText("🏆 ALL-TIME TOP "+BOARD.max, Rcx, 192);
-    ctx.fillStyle="#8fa6c8"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText(Board.statusLine(), Rcx, 207);
-    ctx.fillStyle="#9fe89f"; ctx.font="bold 11px 'Trebuchet MS'"; ctx.fillText("🎮 "+fmtInt(Stats.display())+" runs · all players", Rcx, 220);
-    ctx.fillStyle="#ffd54a"; ctx.font="bold 11px 'Trebuchet MS'"; ctx.fillText("🏁 Season "+seasonLabel()+" ends "+fmtCountdown(seasonEndMs()), Rcx, 233);
-    drawBoard(Rx+8, 246, colW-16, (VH-42)-246, BOARD.max, null);
+    drawBoardTabs(Rcx, 180, false);
+    ctx.textAlign="center"; ctx.fillStyle="#8fa6c8"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText(Board.statusLine()+" · 🎮 "+fmtInt(Stats.display())+" runs", Rcx, 219);
+    ctx.fillStyle="#ffd54a"; ctx.font="bold 11px 'Trebuchet MS'";
+    ctx.fillText(Board.view==="season" ? ("🏁 Season "+seasonLabel()+" ends "+fmtCountdown(seasonEndMs())) : ("🏆 all seasons · top "+BOARD.max), Rcx, 234);
+    drawBoard(Rx+8, 246, colW-16, (VH-42)-246, BOARD.max, Board.lastName);
   } else {
     const ix=x0+pad, iw=w-2*pad;
     ctx.fillStyle=nameCol; ctx.font="bold 13px 'Trebuchet MS'"; ctx.textAlign="center"; ctx.fillText(empty?"ENTER YOUR NAME ↓":"YOUR NAME", cx, 156);
@@ -3446,10 +3595,10 @@ function drawTitle(){
     button(ix+iw/2+4, 280, iw/2-4, 34, "🎖  PASS", ()=>openPass(), "rgba(201,160,255,.20)");
     button(ix, 318, iw/2-4, 32, "📖  HOW TO", ()=>openGuide("title"), "rgba(88,166,255,.18)");
     button(ix+iw/2+4, 318, iw/2-4, 32, "💬  CHAT", ()=>openChat(), "rgba(88,166,255,.18)");
-    ctx.textAlign="center"; ctx.fillStyle="#ffd54a"; ctx.font="bold 15px 'Trebuchet MS'"; ctx.fillText("🏆 ALL-TIME TOP "+BOARD.max, cx, 368);
-    ctx.fillStyle="#8fa6c8"; ctx.font="10px 'Trebuchet MS'"; ctx.fillText(Board.statusLine()+" · every device", cx, 381);
-    ctx.fillStyle="#ffd54a"; ctx.font="bold 10px 'Trebuchet MS'"; ctx.fillText("🏁 Season "+seasonLabel()+" ends in "+fmtCountdown(seasonEndMs()), cx, 393);
-    drawBoard(ix+4, 400, iw-8, 94, BOARD.max, null);
+    drawBoardTabs(cx, 356, true);
+    ctx.textAlign="center"; ctx.fillStyle="#8fa6c8"; ctx.font="10px 'Trebuchet MS'";
+    ctx.fillText((Board.view==="season" ? ("🏁 ends in "+fmtCountdown(seasonEndMs())) : ("🏆 all seasons"))+" · "+Board.statusLine(), cx, 392);
+    drawBoard(ix+4, 400, iw-8, 94, BOARD.max, Board.lastName);
     linkText("ℹ️  How to play fullscreen", cx, 508, ()=>{ G.scene="howto"; });
   }
   ctx.fillStyle="#fff"; ctx.globalAlpha=0.6+0.4*Math.sin(frameCount*0.12); ctx.font="bold 14px 'Trebuchet MS'"; ctx.textAlign="center";
@@ -3613,9 +3762,11 @@ function drawGameOver(){
   const nb=(score>=DB.best&&score>0)?"NEW BEST! ":"";
   ctx.fillStyle="#ffd54a"; ctx.font="13px 'Trebuchet MS'"; ctx.fillText(`${nb}Best ${DB.best}🌿 · ${DB.bestDist} m`,cx,184);
   const rank=Board.rankOf(Board.lastName);
-  ctx.fillStyle="#ffd54a"; ctx.font="bold 17px 'Trebuchet MS'"; ctx.fillText("🏆 HIGH SCORES"+(rank>=0?" · #"+(rank+1):""),cx,210);
-  ctx.fillStyle="#8fa6c8"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText("🏁 "+fmtCountdown(seasonEndMs())+" left · "+Board.statusLine(),cx,226);
-  drawBoard(x0+22,238,w-44,152,BOARD.max,Board.lastName);
+  ctx.fillStyle="#ffd54a"; ctx.font="bold 16px 'Trebuchet MS'"; ctx.fillText("🏆 HIGH SCORES"+(rank>=0?" · YOU'RE #"+(rank+1):""),cx,202);
+  drawBoardTabs(cx, 210, true);
+  ctx.fillStyle="#8fa6c8"; ctx.font="11px 'Trebuchet MS'";
+  ctx.fillText((Board.view==="season" ? ("🏁 "+fmtCountdown(seasonEndMs())+" left") : "🏆 all seasons")+" · "+Board.statusLine(),cx,244);
+  drawBoard(x0+22,254,w-44,142,BOARD.max,Board.lastName);
   ctx.textAlign="left";
   const bw=(w-3*16)/2, bx=x0+16;
   button(bx, 396, bw, 44, "↻  RUN AGAIN", ()=>startGame());
@@ -3728,16 +3879,12 @@ function drawMenuButton(){
 function drawPaused(){
   ctx.fillStyle="rgba(6,10,20,.62)"; ctx.fillRect(0,0,VW,VH);
   const cx=VW/2;
-  ctx.textAlign="center"; ctx.fillStyle="#fff"; ctx.font="bold 36px 'Trebuchet MS'"; ctx.fillText("PAUSED",cx,VH/2-64); ctx.textAlign="left";
+  ctx.textAlign="center"; ctx.fillStyle="#fff"; ctx.font="bold 36px 'Trebuchet MS'"; ctx.fillText("PAUSED",cx,VH/2-92); ctx.textAlign="left";
   drawSoundButton(14, 14+safeTop, 40, 30);
-  if (VW>=520){
-    button(cx-220,VH/2-8,200,50,"▶  RESUME",()=>togglePause());
-    button(cx+20,VH/2-8,200,50,"≡  MAIN MENU",()=>quitToMenu(),"rgba(255,255,255,.14)");
-  } else {
-    const bw=Math.min(280,VW-40), bx=cx-bw/2;
-    button(bx,VH/2-22,bw,46,"▶  RESUME",()=>togglePause());
-    button(bx,VH/2+34,bw,46,"≡  MAIN MENU",()=>quitToMenu(),"rgba(255,255,255,.14)");
-  }
+  const bw=Math.min(300, VW-40), bx=cx-bw/2, by=VH/2-58;
+  button(bx, by,     bw, 46, "▶  RESUME",      ()=>togglePause());
+  button(bx, by+56,  bw, 46, "↻  RESTART RUN", ()=>startGame(), "rgba(255,213,74,.18)");   // abandon this run, start fresh
+  button(bx, by+112, bw, 46, "≡  MAIN MENU",   ()=>quitToMenu(), "rgba(255,255,255,.14)");
   ctx.textAlign="center"; ctx.font="13px 'Trebuchet MS'"; ctx.fillStyle="#9fb4d6"; ctx.fillText("P to resume",cx,VH-30); ctx.textAlign="left";
 }
 
