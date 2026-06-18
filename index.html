@@ -204,6 +204,13 @@ const DB = {
   set passTier(v){ localStorage.setItem("maria_passtier", Math.max(0,Math.floor(v))); },
   get cc(){ return localStorage.getItem("maria_cc")||""; },                          // country flag: "MY" | "NL" | "WW" (rest of world) | "" = not picked yet
   set cc(v){ localStorage.setItem("maria_cc", (v||"").toString().toUpperCase().replace(/[^A-Z]/g,"").slice(0,2)); },
+  // last time this device finished a run (ms) — lets the profile carry a real timestamp (was always 0 before)
+  get lastTs(){ return Number(localStorage.getItem("maria_lastts")||0)||0; },
+  set lastTs(v){ localStorage.setItem("maria_lastts", String(Math.max(0,Math.floor(v||0)))); },
+  // per-season best run for THIS account, keyed "s<seasonIndex>" (string keys keep it an OBJECT in Firebase,
+  // never an index-sparse array). Persisted into the cloud profile so the season board can show every player.
+  get seasonBest(){ try{ const o=JSON.parse(localStorage.getItem("maria_seasonbest")||"{}"); return (o&&typeof o==="object")?o:{}; }catch(e){ return {}; } },
+  set seasonBest(o){ try{ localStorage.setItem("maria_seasonbest", JSON.stringify(o||{})); }catch(e){} },
 };
 
 // ---------------- country flags (picked on the title screen, shown on the leaderboard + chat) ----------------
@@ -460,9 +467,21 @@ const CLOUD = {
     return false;
   },
 };
+// rank a single run the same way the board does (66% kush + 33% distance + hidden bonus)
+function runRank(e){ return e ? 0.66*(Number(e.score)||0) + 0.33*(Number(e.dist)||0) + 5*(Number(e.hidden)||0) : -1; }
+// merge two per-season-best maps ({s0:{...}, s1:{...}}): keep the higher-ranked run for each season key.
+function mergeSeasonBest(a, b){
+  const out={}; a=(a&&typeof a==="object")?a:{}; b=(b&&typeof b==="object")?b:{};
+  for (const k of new Set([...Object.keys(a), ...Object.keys(b)])){
+    const x=a[k], y=b[k];
+    const e=(runRank(x)>=runRank(y)) ? x : y;
+    if (e && typeof e.score==="number") out[k]={ score:Math.max(0,Math.floor(e.score)), dist:Math.max(0,Math.floor(e.dist||0)), hidden:Math.max(0,Math.floor(e.hidden||0)), ts:Number(e.ts)||0 };
+  }
+  return out;
+}
 const Board = {
-  cache: [], cacheAll: [], cacheSeason: [], view: "all",   // `cache` mirrors the active view; tabs flip view via setView() — DEFAULT to ALL-TIME so the full board (every player) shows on open; the 🏁 Season tab (this week only) is one tap away. (Season board is necessarily sparse: profile-bests carry no ts so they can't be week-attributed.)
-  status: "local", lastName: "", _flushing:false, _seasons:{}, profileBests:null,
+  cache: [], cacheAll: [], cacheSeason: [], view: "season",   // `cache` mirrors the active view; tabs flip view via setView(). DEFAULT = 🏁 SEASON (this week's race); 🏆 ALL-TIME is one tab away. The season board is now fed by per-season profile bests too (see fetchProfileBests / profileSeasonEntries), so every account that plays a season shows up — not just whoever submitted a fresh run from a recent client.
+  status: "local", lastName: "", _flushing:false, _seasons:{}, profileBests:null, profileSeasonEntries: [],
   global(){ return CLOUD.configured(); },
   localAll(){ try{ return JSON.parse(localStorage.getItem("maria_scores")||"[]"); }catch(e){ return []; } },
   localSet(a){ try{ localStorage.setItem("maria_scores", JSON.stringify(a)); }catch(e){} },
@@ -534,7 +553,8 @@ const Board = {
     // fell this week + this device's own season runs (so it shows instantly, before the bucket has synced)
     const cs=currentSeason(), inSeason=(e)=>this.entrySeason(e)===cs;
     const bucket=(payload&&payload.seasons&&Array.isArray(payload.seasons[String(cs)]))?payload.seasons[String(cs)]:[];
-    this.cacheSeason=this.normalize(bucket.concat(remote.filter(inSeason), mine.filter(inSeason), prof.filter(inSeason)));
+    const profSeason=(this.profileSeasonEntries||[]).filter(inSeason);   // every account's best run THIS season (self-healing — survives lost bucket writes)
+    this.cacheSeason=this.normalize(bucket.concat(remote.filter(inSeason), mine.filter(inSeason), prof.filter(inSeason), profSeason));
     this.cache=this.view==="season"?this.cacheSeason:this.cacheAll;
   },
   // flip the visible board between the live SEASON race and the ALL-TIME hall; reset the scroll
@@ -544,11 +564,18 @@ const Board = {
     try{
       const d=await CLOUD.read("profiles"); const p=(d&&d.profiles&&typeof d.profiles==="object")?d.profiles:null;
       if(!p) return this.profileBests;                              // unreadable → keep what we had
-      const out={};
+      const out={}; const seasonEntries=[];
       for(const name in p){ const pr=p[name]||{}; const best=Math.max(0,Math.floor(Number(pr.best)||0));
-        if(best>0){ const nm=(name||"???").toString().toUpperCase().slice(0,10)||"???";
-          out[nm]={ name:nm, cc:(typeof pr.cc==="string"?pr.cc:""), score:best, dist:Math.max(0,Math.floor(Number(pr.bestDist)||0)), hidden:0, ts:Number(pr.ts)||0 }; } }
-      this.profileBests=out; return out;
+        const nm=(name||"???").toString().toUpperCase().slice(0,10)||"???"; const cc=(typeof pr.cc==="string"?pr.cc:"");
+        if(best>0){ out[nm]={ name:nm, cc, score:best, dist:Math.max(0,Math.floor(Number(pr.bestDist)||0)), hidden:0, ts:Number(pr.ts)||0 }; }
+        // per-season bests → SEASON board (carries an explicit `season` stamp so it attributes correctly)
+        const sb=pr.seasonBest;
+        if(sb && typeof sb==="object"){
+          for(const key in sb){ const r=sb[key]; if(!r || typeof r.score!=="number") continue;
+            const sIdx=parseInt(String(key).replace(/^s/,""),10); if(!isFinite(sIdx)) continue;
+            seasonEntries.push({ name:nm, cc, score:Math.max(0,Math.floor(r.score)), dist:Math.max(0,Math.floor(r.dist||0)), hidden:Math.max(0,Math.floor(r.hidden||0)), ts:Number(r.ts)||0, season:sIdx }); } }
+      }
+      this.profileBests=out; this.profileSeasonEntries=seasonEntries; return out;
     }catch(e){ return this.profileBests; }
   },
   // make sure THIS device's runs AND every account's profile-best are on the shared scores doc (so they persist)
@@ -723,9 +750,11 @@ const Profile = {
       bestDist:Math.max(Math.floor(Number(base.bestDist)||0), Math.floor(Number(over.bestDist)||0)),
       passXP:  Math.max(Math.floor(Number(base.passXP)||0),   Math.floor(Number(over.passXP)||0)),
       passTier:Math.max(Math.floor(Number(base.passTier)||0), Math.floor(Number(over.passTier)||0)),
+      ts:      Math.max(Math.floor(Number(base.ts)||0),       Math.floor(Number(over.ts)||0)),   // last-played stamp (max wins)
+      seasonBest: mergeSeasonBest(base.seasonBest, over.seasonBest),                              // per-season best run (best-per-season wins)
     };
   },
-  fromDB(){ return { bank:DB.bank, owned:DB.owned, skin:DB.skin, cc:DB.cc, pet:DB.pet, best:DB.best, bestDist:DB.bestDist, passXP:DB.passXP, passTier:DB.passTier }; },
+  fromDB(){ return { bank:DB.bank, owned:DB.owned, skin:DB.skin, cc:DB.cc, pet:DB.pet, best:DB.best, bestDist:DB.bestDist, passXP:DB.passXP, passTier:DB.passTier, ts:DB.lastTs, seasonBest:DB.seasonBest }; },
   applyToDB(p){
     if (!p) return;
     if (Array.isArray(p.owned)) DB.owned = Array.from(new Set(["classic", ...p.owned].filter(Boolean)));
@@ -739,6 +768,8 @@ const Profile = {
     if (p.bestDist!=null && Number(p.bestDist)>DB.bestDist) DB.bestDist = Math.floor(Number(p.bestDist));
     if (p.passXP!=null   && Number(p.passXP)>DB.passXP)     DB.passXP   = Math.floor(Number(p.passXP));     // battle-pass progress is monotonic across devices
     if (p.passTier!=null && Number(p.passTier)>DB.passTier) DB.passTier = Math.floor(Number(p.passTier));   // already-claimed tiers (rewards arrive via owned/bank sync)
+    if (p.ts!=null && Number(p.ts)>DB.lastTs) DB.lastTs = Math.floor(Number(p.ts));                          // adopt a newer last-played stamp
+    if (p.seasonBest && typeof p.seasonBest==="object") DB.seasonBest = mergeSeasonBest(DB.seasonBest, p.seasonBest);  // union per-season bests across devices
     if (DB.owned.indexOf(DB.skin)<0) DB.skin = DB.owned[DB.owned.length-1] || "classic"; // keep equipped valid
   },
   async readBasket(){
@@ -1980,10 +2011,16 @@ function bankAndSubmit(){
   DB.bank = DB.bank + score;             // bank this run's kush for the shop
   if (score>DB.best) DB.best=score;
   if (distance>DB.bestDist) DB.bestDist=distance;
+  // ---- per-season tracking: stamp last-played + keep this account's best run THIS season ----
+  const nowTs=Date.now(), curSeason=currentSeason();
+  DB.lastTs=nowTs;
+  const thisRun={ score:Math.floor(score), dist:Math.floor(distance), hidden:Math.floor(hidden), ts:nowTs };
+  const sb=DB.seasonBest, sKey="s"+curSeason, prevS=sb[sKey];
+  if (!prevS || runRank(thisRun)>runRank(prevS)){ sb[sKey]=thisRun; DB.seasonBest=sb; }   // saved into the cloud profile by Profile.save() below
   lastPassUnlocks = addPassProgress(score);   // 🎖 battle-pass XP for this run + auto-grant any newly-unlocked tier rewards (kush/skins added to DB before the save below)
   const nm = Profile.key(DB.name) || "PLAYER";
   // serialize the 3 cloud writes (SCORE first) so a single free Pantry account isn't slammed by ~17 concurrent requests
-  Board.submit({ name:nm, cc:DB.cc, score:Math.floor(score), dist:Math.floor(distance), hidden:Math.floor(hidden), ts:Date.now() })
+  Board.submit({ name:nm, cc:DB.cc, score:Math.floor(score), dist:Math.floor(distance), hidden:Math.floor(hidden), ts:nowTs })
     .then(()=>Profile.save())            // push bank/best/bestDist (+owned/skin/pet) to the cloud account
     .then(()=>Stats.bump())              // +1 to the global all-time "games played" counter
     .catch(()=>{ try{ Profile.save(); }catch(e){} try{ Stats.bump(); }catch(e){} });
