@@ -461,7 +461,7 @@ const CLOUD = {
   },
 };
 const Board = {
-  cache: [], cacheAll: [], cacheSeason: [], view: "season",   // `cache` mirrors the active view; tabs flip view via setView()
+  cache: [], cacheAll: [], cacheSeason: [], view: "all",   // `cache` mirrors the active view; tabs flip view via setView() — DEFAULT to ALL-TIME so the full board (every player) shows on open; the 🏁 Season tab (this week only) is one tap away. (Season board is necessarily sparse: profile-bests carry no ts so they can't be week-attributed.)
   status: "local", lastName: "", _flushing:false, _seasons:{}, profileBests:null,
   global(){ return CLOUD.configured(); },
   localAll(){ try{ return JSON.parse(localStorage.getItem("maria_scores")||"[]"); }catch(e){ return []; } },
