@@ -479,6 +479,8 @@ function mergeSeasonBest(a, b){
   }
   return out;
 }
+// a profile's last-played stamp: CANONICAL field is `lastTs` (matches DB.lastTs + the rest of the code); older cached clients wrote it as `ts`. Read either, newest wins.
+function profileLastTs(p){ if(!p||typeof p!=="object") return 0; return Math.max(Math.floor(Number(p.lastTs)||0), Math.floor(Number(p.ts)||0)); }
 const Board = {
   cache: [], cacheAll: [], cacheSeason: [], view: "season",   // `cache` mirrors the active view; tabs flip view via setView(). DEFAULT = 🏁 SEASON (this week's race); 🏆 ALL-TIME is one tab away. The season board is now fed by per-season profile bests too (see fetchProfileBests / profileSeasonEntries), so every account that plays a season shows up — not just whoever submitted a fresh run from a recent client.
   status: "local", lastName: "", _flushing:false, _seasons:{}, profileBests:null, profileSeasonEntries: [],
@@ -567,7 +569,7 @@ const Board = {
       const out={}; const seasonEntries=[];
       for(const name in p){ const pr=p[name]||{}; const best=Math.max(0,Math.floor(Number(pr.best)||0));
         const nm=(name||"???").toString().toUpperCase().slice(0,10)||"???"; const cc=(typeof pr.cc==="string"?pr.cc:"");
-        if(best>0){ out[nm]={ name:nm, cc, score:best, dist:Math.max(0,Math.floor(Number(pr.bestDist)||0)), hidden:0, ts:Number(pr.ts)||0 }; }
+        if(best>0){ out[nm]={ name:nm, cc, score:best, dist:Math.max(0,Math.floor(Number(pr.bestDist)||0)), hidden:0, ts:profileLastTs(pr) }; }
         // per-season bests → SEASON board (carries an explicit `season` stamp so it attributes correctly)
         const sb=pr.seasonBest;
         if(sb && typeof sb==="object"){
@@ -750,11 +752,12 @@ const Profile = {
       bestDist:Math.max(Math.floor(Number(base.bestDist)||0), Math.floor(Number(over.bestDist)||0)),
       passXP:  Math.max(Math.floor(Number(base.passXP)||0),   Math.floor(Number(over.passXP)||0)),
       passTier:Math.max(Math.floor(Number(base.passTier)||0), Math.floor(Number(over.passTier)||0)),
-      ts:      Math.max(Math.floor(Number(base.ts)||0),       Math.floor(Number(over.ts)||0)),   // last-played stamp (max wins)
+      lastTs:  Math.max(profileLastTs(base), profileLastTs(over)),                                // canonical last-played stamp (max wins)
+      ts:      Math.max(profileLastTs(base), profileLastTs(over)),                                // legacy alias kept so old cached clients still read it
       seasonBest: mergeSeasonBest(base.seasonBest, over.seasonBest),                              // per-season best run (best-per-season wins)
     };
   },
-  fromDB(){ return { bank:DB.bank, owned:DB.owned, skin:DB.skin, cc:DB.cc, pet:DB.pet, best:DB.best, bestDist:DB.bestDist, passXP:DB.passXP, passTier:DB.passTier, ts:DB.lastTs, seasonBest:DB.seasonBest }; },
+  fromDB(){ return { bank:DB.bank, owned:DB.owned, skin:DB.skin, cc:DB.cc, pet:DB.pet, best:DB.best, bestDist:DB.bestDist, passXP:DB.passXP, passTier:DB.passTier, lastTs:DB.lastTs, ts:DB.lastTs /* legacy alias for old cached clients */, seasonBest:DB.seasonBest }; },
   applyToDB(p){
     if (!p) return;
     if (Array.isArray(p.owned)) DB.owned = Array.from(new Set(["classic", ...p.owned].filter(Boolean)));
@@ -768,7 +771,7 @@ const Profile = {
     if (p.bestDist!=null && Number(p.bestDist)>DB.bestDist) DB.bestDist = Math.floor(Number(p.bestDist));
     if (p.passXP!=null   && Number(p.passXP)>DB.passXP)     DB.passXP   = Math.floor(Number(p.passXP));     // battle-pass progress is monotonic across devices
     if (p.passTier!=null && Number(p.passTier)>DB.passTier) DB.passTier = Math.floor(Number(p.passTier));   // already-claimed tiers (rewards arrive via owned/bank sync)
-    if (p.ts!=null && Number(p.ts)>DB.lastTs) DB.lastTs = Math.floor(Number(p.ts));                          // adopt a newer last-played stamp
+    { const _lt=profileLastTs(p); if (_lt>DB.lastTs) DB.lastTs = _lt; }                                       // adopt a newer last-played stamp (lastTs canonical, ts legacy)
     if (p.seasonBest && typeof p.seasonBest==="object") DB.seasonBest = mergeSeasonBest(DB.seasonBest, p.seasonBest);  // union per-season bests across devices
     if (DB.owned.indexOf(DB.skin)<0) DB.skin = DB.owned[DB.owned.length-1] || "classic"; // keep equipped valid
   },
