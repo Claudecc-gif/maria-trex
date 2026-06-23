@@ -551,12 +551,16 @@ const Board = {
     const mine=this.localAll().concat(this.pendingAll());
     // ALL-TIME board: every player's best run ever (live scores + this device + every account's profile-best)
     this.cacheAll=this.normalize(remote.concat(mine, prof));
-    // SEASON board: only runs from the CURRENT week — the synced server bucket + any all-time best whose run
-    // fell this week + this device's own season runs (so it shows instantly, before the bucket has synced)
+    // SEASON board: ONLY this-week scores. Each source must carry a TRUE per-season score:
+    //   bucket / remote / mine = real run entries (their own per-run ts), profSeason = per-season profile bests.
+    // ⚠ Do NOT add `prof` (the all-time profile bests) here: those carry score=DB.best with ts=last-played, so a
+    // player who merely PLAYED this week would have their ALL-TIME top score injected as their season score (and
+    // normalize, keeping the highest rank per name, would show that instead of the real season run). Season
+    // self-healing for those accounts comes from profSeason (per-season seasonBest), not the all-time best.
     const cs=currentSeason(), inSeason=(e)=>this.entrySeason(e)===cs;
     const bucket=(payload&&payload.seasons&&Array.isArray(payload.seasons[String(cs)]))?payload.seasons[String(cs)]:[];
     const profSeason=(this.profileSeasonEntries||[]).filter(inSeason);   // every account's best run THIS season (self-healing — survives lost bucket writes)
-    this.cacheSeason=this.normalize(bucket.concat(remote.filter(inSeason), mine.filter(inSeason), prof.filter(inSeason), profSeason));
+    this.cacheSeason=this.normalize(bucket.concat(remote.filter(inSeason), mine.filter(e=>inSeason(e)&&!e.alltime), profSeason));
     this.cache=this.view==="season"?this.cacheSeason:this.cacheAll;
   },
   // flip the visible board between the live SEASON race and the ALL-TIME hall; reset the scroll
@@ -569,7 +573,10 @@ const Board = {
       const out={}; const seasonEntries=[];
       for(const name in p){ const pr=p[name]||{}; const best=Math.max(0,Math.floor(Number(pr.best)||0));
         const nm=(name||"???").toString().toUpperCase().slice(0,10)||"???"; const cc=(typeof pr.cc==="string"?pr.cc:"");
-        if(best>0){ out[nm]={ name:nm, cc, score:best, dist:Math.max(0,Math.floor(Number(pr.bestDist)||0)), hidden:0, ts:profileLastTs(pr) }; }
+        // `alltime:true` marks this as an all-time AGGREGATE (score=best, ts=last-played) — NEVER a single dated run.
+        // Season logic (rebuild's mine-filter, writeBody's bucketing) must skip it so a last-played stamp in the
+        // current week can't masquerade as a season run. normalize() strips the flag, so the all-time board is unaffected.
+        if(best>0){ out[nm]={ name:nm, cc, score:best, dist:Math.max(0,Math.floor(Number(pr.bestDist)||0)), hidden:0, ts:profileLastTs(pr), alltime:true }; }
         // per-season bests → SEASON board (carries an explicit `season` stamp so it attributes correctly)
         const sb=pr.seasonBest;
         if(sb && typeof sb==="object"){
@@ -644,7 +651,8 @@ const Board = {
     const scores=this.normalize(((payload&&Array.isArray(payload.scores))?payload.scores:[]).concat(mine));
     const seasons={}, src=(payload&&payload.seasons&&typeof payload.seasons==="object")?payload.seasons:{};
     for (const k in src){ if(Array.isArray(src[k])) seasons[k]=src[k].slice(); }                 // preserve every player's bucket
-    for (const e of mine){ const s=this.entrySeason(e); if(s===null||s===undefined||!isFinite(s)) continue; const k=String(s); (seasons[k]||(seasons[k]=[])).push(e); }
+    for (const e of mine){ if(e&&e.alltime) continue;            // never bucket an all-time AGGREGATE by its last-played ts (it isn't a single-week run)
+      const s=this.entrySeason(e); if(s===null||s===undefined||!isFinite(s)) continue; const k=String(s); (seasons[k]||(seasons[k]=[])).push(e); }
     for (const k in seasons) seasons[k]=this.normalize(seasons[k]);                               // best-per-name within each week
     return { scores:scores, season:currentSeason(), seasons:this.pruneSeasons(seasons) };
   },
