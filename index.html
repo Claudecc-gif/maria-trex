@@ -483,7 +483,7 @@ function mergeSeasonBest(a, b){
 function profileLastTs(p){ if(!p||typeof p!=="object") return 0; return Math.max(Math.floor(Number(p.lastTs)||0), Math.floor(Number(p.ts)||0)); }
 const Board = {
   cache: [], cacheAll: [], cacheSeason: [], view: "season",   // `cache` mirrors the active view; tabs flip view via setView(). DEFAULT = 🏁 SEASON (this week's race); 🏆 ALL-TIME is one tab away. The season board is now fed by per-season profile bests too (see fetchProfileBests / profileSeasonEntries), so every account that plays a season shows up — not just whoever submitted a fresh run from a recent client.
-  status: "local", lastName: "", _flushing:false, _seasons:{}, profileBests:null, profileSeasonEntries: [],
+  status: "local", lastName: "", _flushing:false, _seasons:{}, profileBests:null, profileSeasonEntries: [], seasonChampions: {},
   global(){ return CLOUD.configured(); },
   localAll(){ try{ return JSON.parse(localStorage.getItem("maria_scores")||"[]"); }catch(e){ return []; } },
   localSet(a){ try{ localStorage.setItem("maria_scores", JSON.stringify(a)); }catch(e){} },
@@ -566,6 +566,17 @@ const Board = {
     const bucket=(payload&&payload.seasons&&Array.isArray(payload.seasons[String(cs)]))?payload.seasons[String(cs)]:[];
     const profSeason=(this.profileSeasonEntries||[]).filter(inSeason);   // every account's best run THIS season (self-healing — survives lost bucket writes)
     this.cacheSeason=this.normalize(bucket.concat(remote.filter(inSeason), mine.filter(e=>inSeason(e)&&!e.alltime), profSeason));
+    // 🏆 cache EACH season's champion = the top of that week's RECORDED bucket, so the Wall of Fame immortalises
+    // past winners automatically. Bucket-only (NOT merged with profile bests): a profile's per-season `seasonBest`
+    // can hold a backfilled all-time-best APPROXIMATION (see the 6-18 restore), and crowning a season with an
+    // all-time aggregate is exactly the leak we just killed. Every NORMAL run buckets itself (submit stamps its
+    // season → writeBody files it), so buckets self-complete going forward. Only refresh from a real payload — a
+    // null payload (offline / instant local) keeps the last-known champions.
+    if (payload && payload.seasons && typeof payload.seasons==="object"){
+      const champs={};
+      for (const k in payload.seasons){ const arr=payload.seasons[k]; if(Array.isArray(arr)&&arr.length){ const top=this.normalize(arr); if(top.length) champs[String(k)]=top[0]; } }
+      this.seasonChampions=champs;
+    }
     this.cache=this.view==="season"?this.cacheSeason:this.cacheAll;
   },
   // flip the visible board between the live SEASON race and the ALL-TIME hall; reset the scroll
@@ -3273,18 +3284,27 @@ function drawIntro(){
     ctx.save(); ctx.translate(VW/2, VH/2+46); ctx.scale(pop,pop); ctx.textAlign="center";
     ctx.shadowColor="#000"; ctx.shadowBlur=10; ctx.fillStyle=`hsl(${(T*6)%360} 95% 60%)`; ctx.font="bold 28px 'Trebuchet MS'";
     ctx.fillText("⚡ SEASON "+seasonLabel()+" HAS STARTED ⚡", 0, 0); ctx.restore(); ctx.shadowBlur=0; }
-  // 9) 🏆 WALL OF FAME — Season 1 & 2 champions immortalised + the LIVE Season 3 leader, then this season's twist
+  // 9) 🏆 WALL OF FAME — every FINISHED season's champion (auto-captured from its weekly board via
+  //    Board.seasonChampions; hardcoded HALL_OF_FAME names stay authoritative for the early incomplete-bucket
+  //    seasons), then the LIVE current-season leader + this season's twist.
   if (T>64){ const a=clamp((T-64)/20,0,1); ctx.save(); ctx.globalAlpha=a; ctx.textAlign="center";
     const champ=(Board.cacheSeason&&Board.cacheSeason.length)?Board.cacheSeason[0]:null;   // the LIVE leader of THIS season
-    const rows=HALL_OF_FAME.map(h=>({s:h.season,name:h.name,live:false}));
-    rows.push({s:seasonLabel(), name:(champ?champ.name:"… be the first!"), live:true});
-    const medals=["🥇","🥈","🥉","🏅"];
+    const curLabel=seasonLabel();
+    const override={}; for (const h of HALL_OF_FAME) override[h.season]=h.name;             // season LABEL → hand-verified champ
+    const past=[];                                                                          // every finished season with a known champion
+    for (let label=1; label<curLabel; label++){
+      let nm=override[label];                                                               // authoritative name wins…
+      if(!nm){ const c=Board.seasonChampions?Board.seasonChampions[String(label-1)]:null; nm=c?c.name:null; }  // …else auto-captured (LABEL N = bucket index N-1)
+      if(nm) past.push({s:label,name:nm});
+    }
+    const rows=past.slice(-3).map(r=>({s:r.s,name:r.name,live:false}));                     // 3 most-recent past champs fit the intro; ALL are stored regardless
+    rows.push({s:curLabel, name:(champ?champ.name:"… be the first!"), live:true});
     let yy=VH/2+70;
     ctx.fillStyle="#ffd54a"; ctx.font="bold 15px 'Trebuchet MS'"; ctx.fillText("🏆  WALL OF FAME  🏆", VW/2, yy); yy+=23;
     for (let i=0;i<rows.length;i++){ const r=rows[i];
       if (r.live){ ctx.shadowColor="#ffd54a"; ctx.shadowBlur=12+6*Math.sin(T*0.2); ctx.fillStyle="#fff"; ctx.font="bold 17px 'Trebuchet MS'"; }
       else { ctx.shadowBlur=0; ctx.fillStyle="#cfe0ff"; ctx.font="15px 'Trebuchet MS'"; }
-      ctx.fillText((r.live?"👑":(medals[i]||"🏅"))+"  SEASON "+r.s+" — "+r.name+(r.live?"  (live)":""), VW/2, yy); yy+=22;
+      ctx.fillText((r.live?"👑":"🏆")+"  SEASON "+r.s+" — "+r.name+(r.live?"  (live)":""), VW/2, yy); yy+=22;
     }
     ctx.shadowBlur=0;
     if (champ){ ctx.fillStyle="#9fe89f"; ctx.font="12px 'Trebuchet MS'"; ctx.fillText("beat "+Math.round(Board.rankVal(champ))+" pts to be crowned Season "+seasonLabel()+" champ!", VW/2, yy+2); }
