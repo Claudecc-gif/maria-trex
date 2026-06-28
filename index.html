@@ -496,7 +496,10 @@ const Board = {
   remoteHas(list, e){ return (list||[]).some(r=> this.eq(r,e)); },
   // which weekly season does a timestamp fall in? (same formula as currentSeason(), for any instant)
   seasonOfTs(tMs){ tMs=Number(tMs)||0; if(!tMs) return null; return Math.round((seasonEndAt(tMs) - SEASON_REF_END) / WEEK_MS); },
-  // an entry's season: prefer its stamped field, else derive from its run timestamp (null = unknown / undatable)
+  // an entry's season: prefer its stamped field, else derive from its run timestamp (null = unknown / undatable).
+  // ⚠ DISPLAY / LEGACY ONLY — do NOT use the ts-fallback to gate the SEASON board or to bucket runs: an all-time
+  // aggregate's ts is its LAST-PLAYED time, not a run time, so deriving a season from it mis-files old scores into
+  // the current week. Season-board membership + bucketing require an EXPLICIT `season` stamp (see rebuild/writeBody).
   entrySeason(e){ if (e && typeof e.season==="number" && isFinite(e.season)) return e.season; return this.seasonOfTs(e && e.ts); },
   // unwrap the remote payload into {scores, season, seasons}. scores = the ALL-TIME board (live scores
   // folded together with every per-week bucket → nothing is ever hidden by season). seasons = the per-week
@@ -551,13 +554,15 @@ const Board = {
     const mine=this.localAll().concat(this.pendingAll());
     // ALL-TIME board: every player's best run ever (live scores + this device + every account's profile-best)
     this.cacheAll=this.normalize(remote.concat(mine, prof));
-    // SEASON board: ONLY this-week scores. Each source must carry a TRUE per-season score:
-    //   bucket / remote / mine = real run entries (their own per-run ts), profSeason = per-season profile bests.
-    // ⚠ Do NOT add `prof` (the all-time profile bests) here: those carry score=DB.best with ts=last-played, so a
-    // player who merely PLAYED this week would have their ALL-TIME top score injected as their season score (and
-    // normalize, keeping the highest rank per name, would show that instead of the real season run). Season
-    // self-healing for those accounts comes from profSeason (per-season seasonBest), not the all-time best.
-    const cs=currentSeason(), inSeason=(e)=>this.entrySeason(e)===cs;
+    // SEASON board: ONLY this-week scores. Membership is decided by an EXPLICIT `season` stamp — NEVER by
+    // ts-derivation. Why: an all-time AGGREGATE (a profile best folded into `scores` by syncLocalUp) carries
+    // score=DB.best with ts=LAST-PLAYED and NO season field; normalize() strips its `alltime` flag before it
+    // lands in `scores`, so the only thing left to date it by is that last-played ts. If that ts happens to fall
+    // in the current week, entrySeason()'s ts-fallback would inject an OLD season's high score onto THIS week's
+    // board (the "season N high score was actually made earlier" glitch). Real runs always carry an explicit
+    // season stamp (submit() + bankAndSubmit() both stamp), and profSeason entries carry one from their seasonBest
+    // key — so requiring the stamp keeps every genuine run and drops only the undatable aggregates.
+    const cs=currentSeason(), inSeason=(e)=>(e&&typeof e.season==="number"&&isFinite(e.season)&&e.season===cs);
     const bucket=(payload&&payload.seasons&&Array.isArray(payload.seasons[String(cs)]))?payload.seasons[String(cs)]:[];
     const profSeason=(this.profileSeasonEntries||[]).filter(inSeason);   // every account's best run THIS season (self-healing — survives lost bucket writes)
     this.cacheSeason=this.normalize(bucket.concat(remote.filter(inSeason), mine.filter(e=>inSeason(e)&&!e.alltime), profSeason));
@@ -651,8 +656,9 @@ const Board = {
     const scores=this.normalize(((payload&&Array.isArray(payload.scores))?payload.scores:[]).concat(mine));
     const seasons={}, src=(payload&&payload.seasons&&typeof payload.seasons==="object")?payload.seasons:{};
     for (const k in src){ if(Array.isArray(src[k])) seasons[k]=src[k].slice(); }                 // preserve every player's bucket
-    for (const e of mine){ if(e&&e.alltime) continue;            // never bucket an all-time AGGREGATE by its last-played ts (it isn't a single-week run)
-      const s=this.entrySeason(e); if(s===null||s===undefined||!isFinite(s)) continue; const k=String(s); (seasons[k]||(seasons[k]=[])).push(e); }
+    for (const e of mine){ if(e&&e.alltime) continue;            // never bucket an all-time AGGREGATE (it isn't a single-week run)
+      const s=(e&&typeof e.season==="number"&&isFinite(e.season))?e.season:null; if(s===null) continue;   // bucket ONLY runs carrying an EXPLICIT week stamp — never ts-derive an undated entry into a week
+      const k=String(s); (seasons[k]||(seasons[k]=[])).push(e); }
     for (const k in seasons) seasons[k]=this.normalize(seasons[k]);                               // best-per-name within each week
     return { scores:scores, season:currentSeason(), seasons:this.pruneSeasons(seasons) };
   },
