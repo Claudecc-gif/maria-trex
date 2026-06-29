@@ -1,0 +1,20 @@
+{
+  "rules": {
+    "maria_trex_scores":  { ".read": true, ".write": true },
+    "maria_trex_stats":   { ".read": true, ".write": true },
+    "maria_trex_chat":    { ".read": true, ".write": true },
+
+    "maria_trex_profiles": {
+      ".read": true,
+      ".write": false,
+      "_metadata": { ".write": true },
+      "profiles": {
+        ".write": false,
+        "$name": {
+          ".write": true,
+          ".validate": "newData.hasChildren()"
+        }
+      }
+    }
+  }
+}
