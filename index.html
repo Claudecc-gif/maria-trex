@@ -391,8 +391,16 @@ function seasonEndAt(tMs){
   const off2=tzOffsetMin(end); if(off2!==off) end=targetWall-off2*60000;   // …re-resolve if the boundary falls the other side of a DST switch
   return end;
 }
-function currentSeason(){ return Math.round((seasonEndAt(Date.now()) - SEASON_REF_END) / WEEK_MS); }  // integer week index, +1 each Sunday 21:00
-function seasonEndMs(){ return Math.max(0, seasonEndAt(Date.now()) - Date.now()); }                   // ms remaining for a menu countdown
+// ⚽ WORLD CUP 2026 — the current season runs DOUBLE length (two weeks, ends Sun 2026-07-12 21:00 Ams).
+// Implemented as a one-off remap over the clean weekly clock: the raw weekly index 5 (the Sun 07-05 → 07-12
+// week) is ABSORBED into the current season (index 4); every later season shifts back one week so no label is
+// skipped. Indices ≤4 and all dates before the World Cup are untouched, so past buckets stay correctly attributed.
+const WC_SEASON_IDX   = 4;                                  // the World Cup season's index (label 5)
+const WC_EXTENDED_END = Date.UTC(2026, 6, 12, 19, 0, 0);   // Sun 2026-07-12 21:00 CEST — its real 2-week end
+function rawSeasonIdx(tMs){ return Math.round((seasonEndAt(tMs) - SEASON_REF_END) / WEEK_MS); }   // clean weekly index
+function seasonIdxAt(tMs){ const r=rawSeasonIdx(tMs); return r<=WC_SEASON_IDX ? r : r-1; }         // …with the extra World-Cup week folded in
+function currentSeason(){ return seasonIdxAt(Date.now()); }
+function seasonEndMs(){ const r=rawSeasonIdx(Date.now()); const end=(r===WC_SEASON_IDX||r===WC_SEASON_IDX+1)?WC_EXTENDED_END:seasonEndAt(Date.now()); return Math.max(0, end - Date.now()); }  // countdown to the real (extended) end
 function fmtCountdown(ms){
   if (ms<0) ms=0;
   const totMin=Math.floor(ms/60000), d=Math.floor(totMin/1440), h=Math.floor((totMin%1440)/60), m=totMin%60;
@@ -417,7 +425,17 @@ const SEASON_MUTATORS = [
   { key:"floaty", emoji:"🌙", name:"MOON GRAVITY",     desc:"lighter gravity — jump higher, float longer" },
   { key:"rush",   emoji:"⚡", name:"RUSH HOUR",         desc:"speed Bongs drop way more often" },
 ];
-function seasonMutator(){ const n=SEASON_MUTATORS.length; return SEASON_MUTATORS[((currentSeason()%n)+n)%n]; }
+// ⚽ SPECIAL THEMED SEASONS — keyed by season LABEL (seasonLabel() = index+1). Override the rotating
+// twist for a one-off themed week. Season 6 = ⚽ UEFA WORLD CUP (soccer skin + double-goal scoring).
+const SEASON_TWIST_OVERRIDES = {
+  5: { key:"worldcup", emoji:"⚽", name:"WORLD CUP", desc:"⚽ kick-off! the kush is a soccer ball — top the table 🏆 (2-week season)" },
+};
+function seasonMutator(){
+  const ov=SEASON_TWIST_OVERRIDES[seasonLabel()]; if (ov) return ov;            // themed week wins over the rotation
+  const n=SEASON_MUTATORS.length; return SEASON_MUTATORS[((currentSeason()%n)+n)%n];
+}
+// cosmetic visual theme for the active season (drives the soccer skin). Tied to the twist key so it stays consistent.
+function seasonTheme(){ return seasonMutator().key==="worldcup" ? "worldcup" : "default"; }
 // timed fetch — aborts a hung/slow Pantry after `ms` so a finish can never block for minutes
 // (live-probed: Pantry can hang 60-90s). A timed-out call rejects fast so the retry/queue logic proceeds.
 async function fetchT(url, opts, ms){
@@ -452,6 +470,14 @@ const CLOUD = {
       try{ const r=await fetchT(this.fbUrl(doc),{cache:"no-store"}); if(r.ok){ const d=await r.json(); if(d!==null && d!==undefined) return d; } }catch(e){}
     }
     return await this.readPantry(doc);
+  },
+  // FIREBASE-ONLY read (never Pantry). `undefined` = Firebase unreachable / non-ok; `null` = reachable but empty.
+  // A whole-node write must be built ONLY from this — writing a Pantry-sourced (possibly stale/partial) payload
+  // back onto the Firebase node is exactly the clobber that wiped the Season-5 scores.
+  async readFB(doc){
+    if (!this.hasPrimary()) return undefined;
+    try{ const r=await fetchT(this.fbUrl(doc),{cache:"no-store"}); if(r.ok){ const d=await r.json(); return (d===undefined)?null:d; } }catch(e){}
+    return undefined;
   },
   // explicit single-backend reads (used by the one-time Pantry→primary migration)
   async readPantry(doc){
@@ -517,7 +543,7 @@ const Board = {
   eq(a,b){ return !!(a&&b) && a.name===b.name && Number(a.score)===Number(b.score) && (Number(a.ts)||0)===(Number(b.ts)||0); },
   remoteHas(list, e){ return (list||[]).some(r=> this.eq(r,e)); },
   // which weekly season does a timestamp fall in? (same formula as currentSeason(), for any instant)
-  seasonOfTs(tMs){ tMs=Number(tMs)||0; if(!tMs) return null; return Math.round((seasonEndAt(tMs) - SEASON_REF_END) / WEEK_MS); },
+  seasonOfTs(tMs){ tMs=Number(tMs)||0; if(!tMs) return null; return seasonIdxAt(tMs); },   // ⚽ honours the double-length World Cup season
   // an entry's season: prefer its stamped field, else derive from its run timestamp (null = unknown / undatable).
   // ⚠ DISPLAY / LEGACY ONLY — do NOT use the ts-fallback to gate the SEASON board or to bucket runs: an all-time
   // aggregate's ts is its LAST-PLAYED time, not a run time, so deriving a season from it mis-files old scores into
@@ -670,6 +696,13 @@ const Board = {
     const d=await CLOUD.read("scores");
     return d===null ? null : this.unwrap(d);        // null = all backends unreachable → unknown state, never blind-overwrite
   },
+  // FIREBASE-ONLY scores payload — the ONLY safe base for a whole-node write. "unreachable" = Firebase is down,
+  // so the caller must NOT write (it would otherwise push stale Pantry-sourced data onto Firebase = the clobber).
+  async readRemoteFB(){
+    const d=await CLOUD.readFB("scores");
+    if (d===undefined) return "unreachable";
+    return this.unwrap(d===null ? {} : d);
+  },
   async refresh(){
     if (!this.global()) return;
     const payload=await this.readRemote();
@@ -705,9 +738,10 @@ const Board = {
       if (payload===null){ this.status="offline"; return; }                    // can't read → keep queue, retry later
       const missing=this.pendingAll().filter(e=> !this.remoteHas(this.flatten(payload), e));
       if (missing.length){
-        if (await this.write(this.writeBody(payload, missing))){
+        const fb=await this.readRemoteFB();                                    // build the whole-node write from a FRESH Firebase read only
+        if (fb!=="unreachable" && await this.write(this.writeBody(fb, missing))){
           const after=await this.readRemote(); if(after!==null) payload=after;
-        }
+        }                                                                       // Firebase down → keep the queue, retry later (never write Pantry data onto FB)
       }
       const confirmed=this.flatten(payload);
       this.pendingSet(this.pendingAll().filter(e=> !this.remoteHas(confirmed, e)));
@@ -727,9 +761,12 @@ const Board = {
     let payload=await this.readRemote();
     if (payload===null){ this.status="offline"; return; }                    // outage: stays queued; flushPending retries on next load / online / focus
     if (!this.remoteHas(this.flatten(payload), entry)){                       // READ-GUARDED write: never blind-overwrite when the read failed
-      if (await this.write(this.writeBody(payload, [entry]))){
-        const after=await this.readRemote(); if(after!==null) payload=after;
-      }
+      const fb=await this.readRemoteFB();                                     // build the whole-node write from a FRESH Firebase read only — never from stale Pantry-fallback data (that clobber dropped the Season-5 scores)
+      if (fb!=="unreachable"){
+        if (await this.write(this.writeBody(fb, [entry]))){
+          const after=await this.readRemote(); if(after!==null) payload=after;
+        }
+      }                                                                        // Firebase down → run stays queued; flushPending retries when FB is back
     }
     const present=this.remoteHas(this.flatten(payload), entry);              // confirm by READ-BACK, not by POST status
     if (present) this.pendingSet(this.pendingAll().filter(e=> !this.eq(e, entry)));
@@ -1332,7 +1369,7 @@ const G = { scene:"intro", paused:false };
 let player, cam, platforms, pits, weeds, floatPickups, enemies, bongs, stars, cannons, wings, hiddens, projectiles, bossShots, particles, banners;
 let genX, score, lives, distance, frameCount, flash, hitTimer, dead, deadTimer, overReason;
 let speedTimer, starTimer, flyTimer, ammo, fireCd, level, levelFlash, hidden;
-let weapon, streak, chopper, gravNow, twistKey;   // current gun key · kill-streak · active 🚁 air-support · per-run gravity scalar · cached season-twist key
+let weapon, streak, chopper, gravNow, twistKey, worldCupSkin=false;   // current gun key · kill-streak · active 🚁 air-support · per-run gravity scalar · cached season-twist key · ⚽ soccer-skin flag (cached so the pickup draw never calls season-date fns on the hot path)
 let chaseX, chaseSpeed, bribeUsed, hanging, hangTimer, hangX, slowmo, bossAlive, bossSpawnDist;
 let castleT, towerLevel;           // castle-entry cinematic timer; last level a KL-Towers obstacle spawned
 let petX, petY, petFlap, petPuffCd;   // 🦅 eagle companion: smoothed follow pos + wing-flap phase + smoke cooldown
@@ -1350,7 +1387,7 @@ function resetWorld(forDemo){
   genX=0; score=0; lives=3; distance=0; frameCount=0; flash=0; hitTimer=0; hidden=0;
   dead=false; deadTimer=0; overReason="busted";
   speedTimer=0; starTimer=0; flyTimer=0; ammo=0; fireCd=0; level=0; levelFlash=0;
-  weapon="joint"; streak=0; chopper=null; gravNow=gravFor(); twistKey=seasonMutator().key;   // cache gravity + twist once (off the physics hot path)
+  weapon="joint"; streak=0; chopper=null; gravNow=gravFor(); twistKey=seasonMutator().key; worldCupSkin=(twistKey==="worldcup");   // cache gravity + twist + ⚽ skin once (off the physics hot path)
   chaseX=-540; chaseSpeed=3.05; bribeUsed=false; hanging=false; hangTimer=0; hangX=0; slowmo=0;
   bossAlive=false; bossSpawnDist=320; castleT=0; towerLevel=-1;
   petX=player.x-70; petY=player.y-70; petFlap=0; petPuffCd=0;   // 🦅 eagle starts just behind/above
@@ -1921,7 +1958,7 @@ function drawChopper(){
 function updatePickups(){
   for (const arr of [weeds,floatPickups]) for (const o of arr){
     if (o.taken) continue; o.bob+=0.08;
-    if (aabb(player,o)){ o.taken=true; score += (seasonMutator().key==="kush"?2:1); sfx.collect(); puff(o.x+o.w/2,o.y,5,"#7CFC6A"); }
+    if (aabb(player,o)){ o.taken=true; score += (twistKey==="kush"?2:1); sfx.collect(); puff(o.x+o.w/2,o.y,5,worldCupSkin?"#ffffff":"#7CFC6A"); }
   }
   for (const b of bongs){ if(b.taken)continue; b.bob+=0.07;
     if (aabb(player,b)){ b.taken=true; speedTimer=60*7; sfx.bong(); flash=8; addBanner("BONG!","SPEED BOOST","#7CFC6A",80); puff(b.x+b.w/2,b.y,14,"#8af",true); } }
@@ -2477,7 +2514,26 @@ function weedSprite(){
     c.shadowBlur=0; c.strokeStyle="#5a3a1a"; c.lineWidth=2; c.beginPath(); c.moveTo(0,2); c.lineTo(0,12); c.stroke();
   }));
 }
-function drawWeed(x,y){ ctx.drawImage(weedSprite(), x-14, y-12); }
+// ⚽ Season-6 World Cup skin: the kush pickup becomes a soccer ball. Cached ONCE like every other sprite;
+// the swap reads the per-run `worldCupSkin` flag so no season-date math ever runs on the draw hot path.
+let _ballSpr=null;
+function ballSprite(){
+  return _ballSpr || (_ballSpr=makeSprite(52,56,c=>{
+    c.translate(26,28);
+    c.shadowColor="rgba(0,0,0,.30)"; c.shadowBlur=5; c.shadowOffsetY=2;
+    c.fillStyle="#f5f8fc"; c.beginPath(); c.arc(0,0,13,0,6.28); c.fill();
+    c.shadowBlur=0; c.shadowOffsetY=0;
+    c.fillStyle="#191f2b";
+    const pent=(cx,cy,r,rot)=>{ c.beginPath(); for(let i=0;i<5;i++){ const a=rot+i*1.2566; const px=cx+Math.cos(a)*r, py=cy+Math.sin(a)*r; i?c.lineTo(px,py):c.moveTo(px,py);} c.closePath(); c.fill(); };
+    pent(0,0,4.6,-1.5708);                                                         // centre pentagon
+    for(let i=0;i<5;i++){ const a=-1.5708+i*1.2566; pent(Math.cos(a)*10.4,Math.sin(a)*10.4,2.4,a+0.63); }   // outer ring
+    c.strokeStyle="#9aa6b8"; c.lineWidth=1; c.beginPath(); c.arc(0,0,13,0,6.28); c.stroke();                // rim
+    c.strokeStyle="rgba(120,130,150,.55)";                                          // seams centre → ring
+    for(let i=0;i<5;i++){ const a=-1.5708+i*1.2566; c.beginPath(); c.moveTo(Math.cos(a)*4.6,Math.sin(a)*4.6); c.lineTo(Math.cos(a)*10.4,Math.sin(a)*10.4); c.stroke(); }
+    c.fillStyle="rgba(255,255,255,.5)"; c.beginPath(); c.arc(-4,-5,2.4,0,6.28); c.fill();                   // gloss
+  }));
+}
+function drawWeed(x,y){ ctx.drawImage(worldCupSkin?ballSprite():weedSprite(), x-14, y-12); }
 // bong / cannon: static body cached as a sprite; only the wisp of smoke is drawn live
 let _bongSpr=null;
 function bongSprite(){
