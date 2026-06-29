@@ -428,7 +428,7 @@ const SEASON_MUTATORS = [
 // ⚽ SPECIAL THEMED SEASONS — keyed by season LABEL (seasonLabel() = index+1). Override the rotating
 // twist for a one-off themed week. Season 6 = ⚽ UEFA WORLD CUP (soccer skin + double-goal scoring).
 const SEASON_TWIST_OVERRIDES = {
-  5: { key:"worldcup", emoji:"⚽", name:"WORLD CUP", desc:"⚽ kick-off! the kush is a soccer ball — top the table 🏆 (2-week season)" },
+  5: { key:"worldcup", emoji:"⚽", name:"WORLD CUP", desc:"⚽ kick-off! it's World Cup season — top the table 🏆 (runs 2 weeks)" },
 };
 function seasonMutator(){
   const ov=SEASON_TWIST_OVERRIDES[seasonLabel()]; if (ov) return ov;            // themed week wins over the rotation
