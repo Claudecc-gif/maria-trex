@@ -220,18 +220,19 @@ const FLAG_OPTS = [ {cc:"MY", label:"MALAYSIA"}, {cc:"NL", label:"NETHERLANDS"},
 // ⚽ WORLD CUP national-team kits — used ONLY when worldCupSkin is true (enemy torso recolor).
 // shirt = jersey body, trim = collar/shade tone. Inert (never read) outside World Cup season.
 const TEAMS = {
-  BRA:{name:"BRAZIL",      shirt:"#f7d417", trim:"#1c8a3b"},
-  ARG:{name:"ARGENTINA",   shirt:"#6c9fd6", trim:"#ffffff"},
-  FRA:{name:"FRANCE",      shirt:"#1e3a8a", trim:"#ce1126"},
-  GER:{name:"GERMANY",     shirt:"#eeeeee", trim:"#141414"},
-  ENG:{name:"ENGLAND",     shirt:"#f2f2f2", trim:"#c8102e"},
-  NED:{name:"NETHERLANDS", shirt:"#ea5a13", trim:"#1a1a1a"},
-  ESP:{name:"SPAIN",       shirt:"#c60b1e", trim:"#ffd200"},
-  POR:{name:"PORTUGAL",    shirt:"#b5121b", trim:"#2e6b2e"},
-  ITA:{name:"ITALY",       shirt:"#1f6fb2", trim:"#ffffff"},
-  BEL:{name:"BELGIUM",     shirt:"#b71234", trim:"#f3d02f"},
-  CRO:{name:"CROATIA",     shirt:"#d22631", trim:"#ffffff"},
-  JPN:{name:"JAPAN",       shirt:"#0b3d91", trim:"#ffffff"},
+  BRA:{name:"BRAZIL",      shirt:"#f7d417", trim:"#1c8a3b", flag:["#159a4a","#f7d417","#1565d8"], fd:"h"},
+  ARG:{name:"ARGENTINA",   shirt:"#6c9fd6", trim:"#ffffff", flag:["#74acdf","#ffffff","#74acdf"], fd:"h"},
+  FRA:{name:"FRANCE",      shirt:"#1e3a8a", trim:"#ce1126", flag:["#1e3a8a","#ffffff","#ce1126"], fd:"v"},
+  GER:{name:"GERMANY",     shirt:"#eeeeee", trim:"#141414", flag:["#141414","#dd0000","#ffce00"], fd:"h"},
+  ENG:{name:"ENGLAND",     shirt:"#f2f2f2", trim:"#c8102e", flag:["#ffffff","#c8102e","#ffffff"], fd:"h"},
+  NED:{name:"NETHERLANDS", shirt:"#ea5a13", trim:"#1a1a1a", flag:["#ae1c28","#ffffff","#21468b"], fd:"h"},
+  ESP:{name:"SPAIN",       shirt:"#c60b1e", trim:"#ffd200", flag:["#c60b1e","#ffc400","#c60b1e"], fd:"h"},
+  POR:{name:"PORTUGAL",    shirt:"#b5121b", trim:"#2e6b2e", flag:["#006600","#ff0000"], fd:"v"},
+  ITA:{name:"ITALY",       shirt:"#1f6fb2", trim:"#ffffff", flag:["#009246","#ffffff","#ce2b37"], fd:"v"},
+  BEL:{name:"BELGIUM",     shirt:"#b71234", trim:"#f3d02f", flag:["#141414","#fae042","#ed2939"], fd:"v"},
+  CRO:{name:"CROATIA",     shirt:"#d22631", trim:"#ffffff", flag:["#d22631","#ffffff","#171796"], fd:"h"},
+  JPN:{name:"JAPAN",       shirt:"#0b3d91", trim:"#ffffff", flag:["#ffffff","#bc002d","#ffffff"], fd:"v"},
+  MAS:{name:"MALAYSIA",    shirt:"#fcd116", trim:"#000000", flag:["#cc0001","#ffffff","#010066"], fd:"h"},   // ⚽ Harimau Malaya (home: yellow/black)
 };
 const TEAM_CODES = Object.keys(TEAMS);
 function drawFlag(cc, x, y, w, h){
@@ -2411,10 +2412,10 @@ function volcano(x,baseY,s){ ctx.beginPath(); ctx.moveTo(x,baseY); ctx.lineTo(x+
 // Static art is rendered once into an offscreen sprite; only cheap live extras draw on top. Only used when worldCupSkin.
 const STAD_BASE=360, STAD_W=1200, _stadCache={};
 const STAD_PALETTES=[
-  { tier:"#2c5580", stand:"#3a6ea5", roof:"#22304a", seat:"#cde0f5", accent:"#ffd54a" }, // 0 blue arena
-  { tier:"#5e2c2c", stand:"#7a3a3a", roof:"#3a1f1f", seat:"#f0d0c0", accent:"#7CFC6A" }, // 1 red bowl
-  { tier:"#2c5e38", stand:"#3a7a4a", roof:"#1f3a26", seat:"#d8f0d0", accent:"#ff7a1a" }, // 2 green stand
-  { tier:"#44285e", stand:"#5a3a7a", roof:"#2e1f3a", seat:"#e0d0f0", accent:"#42e8ff" }, // 3 night arena
+  { deep:"#1a3048", stand:"#2f4a64", seat:"#90a8c2", roof:"#13212f", accent:"#ffd54a" }, // muted blue (calm backdrop)
+  { deep:"#33222c", stand:"#523743", seat:"#b596a0", roof:"#20141a", accent:"#7CFC6A" }, // muted maroon
+  { deep:"#1c3528", stand:"#33503c", seat:"#93b69b", roof:"#14241a", accent:"#ff7a1a" }, // muted green
+  { deep:"#211a32", stand:"#392c50", seat:"#a596c0", roof:"#161024", accent:"#42e8ff" }, // muted purple/night
 ];
 function stadiumSprite(variant){
   const key="s"+variant;
@@ -2423,50 +2424,29 @@ function stadiumSprite(variant){
 }
 function stadiumPanel(baseY, variant, c){
   const P=STAD_PALETTES[variant];
-  c.fillStyle=P.tier; c.fillRect(0,baseY-200,STAD_W,150);                 // back tier slab
-  for(let yy=baseY-196; yy<baseY-58; yy+=7)                               // static crowd speckle
-    for(let xx=6; xx<STAD_W-6; xx+=7){ c.fillStyle=((xx*7+yy*13+variant)%5)?P.seat:"#ffffff"; c.fillRect(xx,yy,4,4); }
-  c.fillStyle=P.stand; c.fillRect(0,baseY-60,STAD_W,14);                  // lower-rail divider
-  c.fillStyle=P.roof;  c.fillRect(0,baseY-210,STAD_W,12);                 // roof beam
-  for(let x=20;x<STAD_W;x+=46){                                           // flag bunting along the roof
-    c.fillStyle=((x/46|0)%2)?P.accent:"#ffffff";
-    c.beginPath(); c.moveTo(x,baseY-208); c.lineTo(x+22,baseY-208); c.lineTo(x+11,baseY-196); c.closePath(); c.fill();
+  const g=c.createLinearGradient(0,baseY-205,0,baseY-58);                  // soft low-contrast back stand (recedes)
+  g.addColorStop(0,P.deep); g.addColorStop(1,P.stand);
+  c.fillStyle=g; c.fillRect(0,baseY-205,STAD_W,150);
+  c.globalAlpha=0.10;                                                      // faint, sparse crowd texture (not bright)
+  for(let yy=baseY-198; yy<baseY-72; yy+=9)
+    for(let xx=10; xx<STAD_W-10; xx+=11){ c.fillStyle=((xx+yy)%3)?P.seat:"#ffffff"; c.fillRect(xx,yy,3,3); }
+  c.globalAlpha=1;
+  c.fillStyle=P.roof; c.fillRect(0,baseY-160,STAD_W,2); c.fillRect(0,baseY-115,STAD_W,2); c.fillRect(0,baseY-207,STAD_W,9);  // tier lines + roof
+  for(const px of [210, STAD_W-250]){                                      // dim floodlight pylons
+    c.fillStyle="rgba(120,128,140,.5)"; c.fillRect(px-2,baseY-262,4,72);
+    c.fillStyle="rgba(210,216,226,.4)"; c.fillRect(px-15,baseY-278,30,15);
   }
-  for(const px of [140+variant*30, STAD_W-180-variant*30]){              // floodlight pylons (variant-shifted)
-    c.fillStyle="#888"; c.fillRect(px-2,baseY-300,4,120);
-    c.fillStyle="#cfd6e0"; c.fillRect(px-22,baseY-318,44,22);
-    c.fillStyle="rgba(255,255,210,.9)";
-    for(let i=0;i<12;i++) c.fillRect(px-20+(i%4)*11, baseY-316+((i/4|0)*7), 8, 5);
-  }
-  const bsx=(variant%2)? STAD_W-360 : 230;                               // big-screen frame (live flicker added later)
-  c.fillStyle="#0a0a0a"; c.fillRect(bsx,baseY-300,150,92);
-  c.fillStyle=P.accent;  c.fillRect(bsx-3,baseY-303,156,4);
-  const gx=STAD_W/2-70;                                                   // goal frame + net
-  c.strokeStyle="#ffffff"; c.lineWidth=4; c.strokeRect(gx,baseY-70,140,60);
-  c.strokeStyle="rgba(255,255,255,.35)"; c.lineWidth=1;
-  for(let nx=gx+10; nx<gx+140; nx+=12){ c.beginPath(); c.moveTo(nx,baseY-66); c.lineTo(nx,baseY-12); c.stroke(); }
-  for(let ny=baseY-66; ny<baseY-10; ny+=12){ c.beginPath(); c.moveTo(gx+4,ny); c.lineTo(gx+136,ny); c.stroke(); }
+  const gx=STAD_W/2-68;                                                    // goal + net, dim (stays in the background)
+  c.strokeStyle="rgba(255,255,255,.4)"; c.lineWidth=3; c.strokeRect(gx,baseY-60,136,50);
+  c.strokeStyle="rgba(255,255,255,.12)"; c.lineWidth=1;
+  for(let nx=gx+14; nx<gx+136; nx+=16){ c.beginPath(); c.moveTo(nx,baseY-56); c.lineTo(nx,baseY-12); c.stroke(); }
+  for(let ny=baseY-56; ny<baseY-12; ny+=16){ c.beginPath(); c.moveTo(gx+4,ny); c.lineTo(gx+132,ny); c.stroke(); }
 }
 function drawStadiumBg(variant){
   const baseY=GROUND_TOP+6-cam.y*0.1;
-  const par=0.20, off=((cam.x*par)%STAD_W+STAD_W)%STAD_W;
-  const spr=stadiumSprite(variant), by=Math.round(baseY-STAD_BASE), bsx=(variant%2)? STAD_W-360 : 230;
-  for(let p=-1;p<=Math.ceil(VW/STAD_W)+1;p++){
-    const ox=Math.round(p*STAD_W-off);
-    ctx.drawImage(spr, ox, by);
-    ctx.fillStyle=(frameCount%50<25)?"rgba(120,220,255,.5)":"rgba(255,210,120,.5)";  // big-screen flicker (1 rect)
-    ctx.fillRect(ox+bsx+8, by+STAD_BASE-294, 134, 78);
-  }
-  if(!lowFX){
-    const a=0.04+0.03*Math.max(0,Math.sin(frameCount*0.05));               // crowd-roar shimmer (no new state)
-    ctx.fillStyle="rgba(255,255,255,"+a.toFixed(3)+")"; ctx.fillRect(0,baseY-60,VW,16);
-    ctx.fillStyle=STAD_PALETTES[variant].accent;                           // pitch-side corner flags (waving)
-    for(let fx=((-cam.x*0.3)%240+240)%240-240; fx<VW; fx+=240){
-      const sw=Math.sin((fx+frameCount*3)*0.05)*2;
-      ctx.fillRect(fx,baseY-26,2,26);
-      ctx.beginPath(); ctx.moveTo(fx+2,baseY-26); ctx.lineTo(fx+12,baseY-23+sw); ctx.lineTo(fx+2,baseY-18); ctx.closePath(); ctx.fill();
-    }
-  }
+  const par=0.18, off=((cam.x*par)%STAD_W+STAD_W)%STAD_W;
+  const spr=stadiumSprite(variant), by=Math.round(baseY-STAD_BASE);
+  for(let p=-1;p<=Math.ceil(VW/STAD_W)+1;p++){ ctx.drawImage(spr, Math.round(p*STAD_W-off), by); }   // calm, static, muted backdrop
 }
 let cloudSeed=[]; for(let i=0;i<12;i++) cloudSeed.push({x:rnd(0,4000),y:rnd(20,200),s:rnd(.6,1.4),spd:rnd(.1,.35)});
 function drawClouds(th){
@@ -2662,20 +2642,25 @@ function weedSprite(){
 // ⚽ Season-6 World Cup skin: the kush pickup becomes a soccer ball. Cached ONCE like every other sprite;
 // the swap reads the per-run `worldCupSkin` flag so no season-date math ever runs on the draw hot path.
 let _ballSpr=null;
-function ballSprite(){
+function ballSprite(){   // ⚽ Adidas TRIONDA — 2026 World Cup ball: white base + 3 curved waves (red Canada / blue USA / green Mexico) meeting at centre
   return _ballSpr || (_ballSpr=makeSprite(52,56,c=>{
     c.translate(26,28);
     c.shadowColor="rgba(0,0,0,.30)"; c.shadowBlur=5; c.shadowOffsetY=2;
-    c.fillStyle="#f5f8fc"; c.beginPath(); c.arc(0,0,13,0,6.28); c.fill();
+    c.fillStyle="#fbfcfe"; c.beginPath(); c.arc(0,0,13,0,6.28); c.fill();
     c.shadowBlur=0; c.shadowOffsetY=0;
-    c.fillStyle="#191f2b";
-    const pent=(cx,cy,r,rot)=>{ c.beginPath(); for(let i=0;i<5;i++){ const a=rot+i*1.2566; const px=cx+Math.cos(a)*r, py=cy+Math.sin(a)*r; i?c.lineTo(px,py):c.moveTo(px,py);} c.closePath(); c.fill(); };
-    pent(0,0,4.6,-1.5708);                                                         // centre pentagon
-    for(let i=0;i<5;i++){ const a=-1.5708+i*1.2566; pent(Math.cos(a)*10.4,Math.sin(a)*10.4,2.4,a+0.63); }   // outer ring
-    c.strokeStyle="#9aa6b8"; c.lineWidth=1; c.beginPath(); c.arc(0,0,13,0,6.28); c.stroke();                // rim
-    c.strokeStyle="rgba(120,130,150,.55)";                                          // seams centre → ring
-    for(let i=0;i<5;i++){ const a=-1.5708+i*1.2566; c.beginPath(); c.moveTo(Math.cos(a)*4.6,Math.sin(a)*4.6); c.lineTo(Math.cos(a)*10.4,Math.sin(a)*10.4); c.stroke(); }
-    c.fillStyle="rgba(255,255,255,.5)"; c.beginPath(); c.arc(-4,-5,2.4,0,6.28); c.fill();                   // gloss
+    c.save(); c.beginPath(); c.arc(0,0,13,0,6.28); c.clip();
+    const cols=["#e2231a","#1565d8","#159a4a"];
+    for(let i=0;i<3;i++){ c.save(); c.rotate(i*2.0944);
+      c.strokeStyle=cols[i]; c.lineWidth=4.6; c.lineCap="round";
+      c.beginPath(); c.moveTo(-1,-1); c.quadraticCurveTo(7,-13, 15,-3); c.stroke();
+      c.fillStyle=cols[i]; c.beginPath(); c.arc(-1.2,-1.2,2.2,0,6.28); c.fill();
+      c.restore();
+    }
+    c.fillStyle="rgba(255,255,255,.92)";
+    for(let i=0;i<3;i++){ const a=i*2.0944+0.5, r=8.5; c.fillRect(Math.cos(a)*r-0.8,Math.sin(a)*r-0.8,1.6,1.6); }
+    c.restore();
+    c.strokeStyle="#aeb6c2"; c.lineWidth=1; c.beginPath(); c.arc(0,0,13,0,6.28); c.stroke();
+    c.fillStyle="rgba(255,255,255,.55)"; c.beginPath(); c.arc(-4.5,-5.5,2.4,0,6.28); c.fill();
   }));
 }
 function drawWeed(x,y){ ctx.drawImage(weedSprite(), x-14, y-12); }   // in-game pickup is always the kush plant (the ⚽ World-Cup skin lives in the MENUS now, not gameplay)
@@ -2829,8 +2814,18 @@ function drawBossShots(){
 }
 
 // ----- enemies -----
+// ⚽ small national-team flag above an enemy's head (World Cup season only)
+function drawTeamFlag(e){
+  const t=TEAMS[e.country]; if(!t||!t.flag) return;
+  const fx=e.x+e.w/2-7, fy=e.y-18, fw=14, fh=9, wob=Math.sin((e.t||0)+frameCount*0.07);
+  ctx.fillStyle="#cbd2dc"; ctx.fillRect(fx-1, fy-1, 1.6, fh+10);                 // pole
+  const s=t.flag, n=s.length;
+  if (t.fd==="v"){ for(let i=0;i<n;i++){ ctx.fillStyle=s[i]; ctx.fillRect(fx+1+i*(fw/n), fy+wob, fw/n+0.6, fh); } }
+  else { for(let i=0;i<n;i++){ ctx.fillStyle=s[i]; ctx.fillRect(fx+1, fy+wob+i*(fh/n), fw, fh/n+0.6); } }
+  ctx.strokeStyle="rgba(0,0,0,.3)"; ctx.lineWidth=0.5; ctx.strokeRect(fx+1, fy+wob, fw, fh);
+}
 function drawEnemies(){
-  for(const e of enemies){ if(e.x<cam.x-80||e.x>camRightX())continue; if(e.boss) drawBoss(e); else drawCop(e); }
+  for(const e of enemies){ if(e.x<cam.x-80||e.x>camRightX())continue; if(e.boss) drawBoss(e); else drawCop(e); if(worldCupSkin&&e.country) drawTeamFlag(e); }
 }
 function drawCop(e){
   const x=e.x,y=e.y,w=e.w,h=e.h;
