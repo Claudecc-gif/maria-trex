@@ -529,6 +529,11 @@ function mergeSeasonBest(a, b){
 }
 // a profile's last-played stamp: CANONICAL field is `lastTs` (matches DB.lastTs + the rest of the code); older cached clients wrote it as `ts`. Read either, newest wins.
 function profileLastTs(p){ if(!p||typeof p!=="object") return 0; return Math.max(Math.floor(Number(p.lastTs)||0), Math.floor(Number(p.ts)||0)); }
+// hard slurs are hidden from the board AND chat at RENDER time, so an offensive name/message can never
+// show even if a client re-submits it (the backend is keyless/public). Deliberately narrow to avoid the
+// "Scunthorpe problem" — only unambiguous slurs.
+const BANNED_RE = /n[i1!]gg|f[a4]gg(?:ot)?|\bretard|\bkike\b|\bsp[i1]c\b|\bchink\b|\bcoon\b/i;
+function isBanned(s){ return BANNED_RE.test(String(s||"")); }
 const Board = {
   cache: [], cacheAll: [], cacheSeason: [], view: "season",   // `cache` mirrors the active view; tabs flip view via setView(). DEFAULT = 🏁 SEASON (this week's race); 🏆 ALL-TIME is one tab away. The season board is now fed by per-season profile bests too (see fetchProfileBests / profileSeasonEntries), so every account that plays a season shows up — not just whoever submitted a fresh run from a recent client.
   status: "local", lastName: "", _flushing:false, _seasons:{}, profileBests:null, profileSeasonEntries: [], seasonChampions: {},
@@ -577,6 +582,7 @@ const Board = {
     for (const e of (arr||[])){
       if (!e || typeof e.score!=="number" || !isFinite(e.score)) continue;
       const name=(e.name||"???").toString().toUpperCase().slice(0,10) || "???";
+      if (isBanned(name)) continue;                                  // never let a slur onto the board
       const cc=(typeof e.cc==="string") ? e.cc.toUpperCase().replace(/[^A-Z]/g,"").slice(0,2) : "";
       const ent={ name, cc, score:Math.max(0,Math.floor(e.score)), dist:Math.max(0,Math.floor(e.dist||0)), hidden:Math.max(0,Math.floor(e.hidden||0)), ts:e.ts||0 };
       if (typeof e.season==="number" && isFinite(e.season)) ent.season=e.season;   // keep the week stamp so per-season buckets stay attributable
@@ -943,7 +949,14 @@ const Chat = {
   cache: [], status: "loading", lastFetch: 0, _fetching: false,
   sending: false, lastSendTs: 0, feedbackMode: false,
   MAX_LEN: 140, FETCH_EVERY: 4000, KEEP: 120,
+  lastSeen: (()=>{ try{ return Number(localStorage.getItem("maria_chat_seen"))||0; }catch(e){ return 0; } })(),  // ts of the newest message this device has opened
+  _seenInit: false,
   available(){ return CLOUD.hasPrimary(); },
+  latestTs(){ let t=0; for(const m of this.cache){ const x=Number(m.ts)||0; if(x>t) t=x; } return t; },
+  // mark everything currently loaded as read (called while the 💬 tab is open)
+  markSeen(){ const t=this.latestTs(); if(t>this.lastSeen){ this.lastSeen=t; try{ localStorage.setItem("maria_chat_seen",String(t)); }catch(e){} } },
+  // unread = messages newer than last-seen, from OTHER players (drives the 💬 badge on the menu)
+  unread(){ if(!this.cache.length) return 0; let me=""; try{ me=Profile.key(DB.name); }catch(e){} let n=0; for(const m of this.cache){ if((Number(m.ts)||0)>this.lastSeen && m.name!==me) n++; } return n; },
   statusLine(){
     if (!this.available()) return "💬 chat needs the online backend";
     if (this.status==="sendfail") return "⚠️ message didn't send — tap SEND to retry";
@@ -962,13 +975,14 @@ const Chat = {
       if (r && r.ok){
         const d=(await r.json())||{};
         this.cache=Object.keys(d).sort().map(k=>d[k])
-          .filter(m=> m && typeof m.text==="string" && m.text.trim())
+          .filter(m=> m && typeof m.text==="string" && m.text.trim() && !isBanned(m.name) && !isBanned(m.text))
           .map(m=>({
             name:(m.name||"???").toString().toUpperCase().slice(0,10)||"???",
             cc:(typeof m.cc==="string") ? m.cc.toUpperCase().replace(/[^A-Z]/g,"").slice(0,2) : "",
             text:m.text.toString().replace(/\s+/g," ").trim().slice(0,this.MAX_LEN),
             ts:Number(m.ts)||0, fb:!!m.fb,
           }));
+        if (!this._seenInit){ this._seenInit=true; if (!this.lastSeen) this.markSeen(); }   // first ever load → old history counts as already-read (no badge for pre-existing messages)
         if (this.status!=="sendfail") this.status="online";
       } else if (this.status!=="sendfail") this.status="offline";
     }catch(e){ if (this.status!=="sendfail") this.status="offline"; }
@@ -1411,7 +1425,7 @@ function startGame(){
   if (ac() && actx.state==="suspended") actx.resume();
   Music.setTheme(0); Music.start();
   addBanner("WANTED!", "Run! The cops are coming — grab weed, bribe at 100", "#ff5a5a", 150);
-  addBanner(mut.emoji+" SEASON "+seasonLabel()+" TWIST: "+mut.name, mut.desc, "#9fe8ff", 220);
+  addBanner(mut.emoji+" SEASON "+seasonLabel()+" TWIST: "+mut.name, mut.desc, seasonTheme()==="worldcup"?"#ffd54a":"#9fe8ff", 220);   // ⚽ gold World-Cup banner
 }
 function togglePause(){ if(G.scene==="play"){G.scene="paused";G.paused=true;} else if(G.scene==="paused"){G.scene="play";G.paused=false;} }
 
@@ -1958,7 +1972,7 @@ function drawChopper(){
 function updatePickups(){
   for (const arr of [weeds,floatPickups]) for (const o of arr){
     if (o.taken) continue; o.bob+=0.08;
-    if (aabb(player,o)){ o.taken=true; score += (twistKey==="kush"?2:1); sfx.collect(); puff(o.x+o.w/2,o.y,5,worldCupSkin?"#ffffff":"#7CFC6A"); }
+    if (aabb(player,o)){ o.taken=true; score += (twistKey==="kush"?2:1); sfx.collect(); puff(o.x+o.w/2,o.y,5,"#7CFC6A"); }
   }
   for (const b of bongs){ if(b.taken)continue; b.bob+=0.07;
     if (aabb(player,b)){ b.taken=true; speedTimer=60*7; sfx.bong(); flash=8; addBanner("BONG!","SPEED BOOST","#7CFC6A",80); puff(b.x+b.w/2,b.y,14,"#8af",true); } }
@@ -2533,7 +2547,7 @@ function ballSprite(){
     c.fillStyle="rgba(255,255,255,.5)"; c.beginPath(); c.arc(-4,-5,2.4,0,6.28); c.fill();                   // gloss
   }));
 }
-function drawWeed(x,y){ ctx.drawImage(worldCupSkin?ballSprite():weedSprite(), x-14, y-12); }
+function drawWeed(x,y){ ctx.drawImage(weedSprite(), x-14, y-12); }   // in-game pickup is always the kush plant (the ⚽ World-Cup skin lives in the MENUS now, not gameplay)
 // bong / cannon: static body cached as a sprite; only the wisp of smoke is drawn live
 let _bongSpr=null;
 function bongSprite(){
@@ -3280,6 +3294,17 @@ function button(x,y,w,h,label,action,col){
   ctx.strokeStyle=col? col.replace(/[\d.]+\)$/,"0.9)"):"rgba(124,252,106,.9)"; ctx.lineWidth=2; roundRect(x,y,w,h,12); ctx.stroke();
   ctx.fillStyle="#fff"; ctx.font="bold 20px 'Trebuchet MS'"; ctx.textAlign="center"; ctx.textBaseline="middle"; ctx.fillText(label,x+w/2,y+h/2); ctx.textAlign="left"; ctx.textBaseline="alphabetic";
 }
+// 💬 unread-chat badge — a pulsing red pip + count at a button's top-right corner (drawn AFTER the button)
+function drawChatBadge(bx, by, bw){
+  const n=Chat.unread(); if(!n) return;
+  const cxb=bx+bw-7, cyb=by+5, pulse=1+0.12*Math.sin(frameCount*0.18);
+  ctx.save();
+  ctx.fillStyle="#ff3b3b"; ctx.beginPath(); ctx.arc(cxb,cyb,8.5*pulse,0,6.28); ctx.fill();
+  ctx.strokeStyle="rgba(255,255,255,.85)"; ctx.lineWidth=1.5; ctx.stroke();
+  ctx.fillStyle="#fff"; ctx.font="bold 11px 'Trebuchet MS'"; ctx.textAlign="center"; ctx.textBaseline="middle";
+  ctx.fillText(n>9?"9+":String(n), cxb, cyb+0.5);
+  ctx.textBaseline="alphabetic"; ctx.textAlign="left"; ctx.restore();
+}
 
 // ===================== KUSH RUSH logo (Kuala Lumpur style) =====================
 function drawLeaf7(){                 // 7-leaflet cannabis leaf, pointing up, ~46px tall
@@ -3328,6 +3353,20 @@ function drawLogo(cx, cy, s, t){
   ctx.restore();
 }
 
+// ⚽ WORLD CUP menu dressing (Season-5 theme): a string of pennant-flag bunting across the top of the
+// menus. MENUS ONLY — gameplay stays pure kush. Cheap flat fills, no per-frame shadowBlur.
+function drawWorldCupBunting(topY){
+  const cols=["#2e9b4e","#ffd54a","#2f6fe0","#e23b3b","#f4f7fb","#19a0a0"];
+  const w=VW, n=Math.max(8, Math.ceil(w/34));
+  ctx.save();
+  ctx.strokeStyle="rgba(255,255,255,.30)"; ctx.lineWidth=1.5;
+  ctx.beginPath(); for(let i=0;i<=n;i++){ const x=i*(w/n), y=topY+5*Math.sin((i/n)*Math.PI); i?ctx.lineTo(x,y):ctx.moveTo(x,y); } ctx.stroke();
+  for(let i=0;i<n;i++){ const x=i*(w/n)+(w/n)/2, y=topY+5*Math.sin(((i+0.5)/n)*Math.PI);
+    ctx.fillStyle=cols[i%cols.length]; ctx.beginPath(); ctx.moveTo(x-7,y); ctx.lineTo(x+7,y); ctx.lineTo(x,y+13); ctx.closePath(); ctx.fill();
+    ctx.fillStyle="rgba(255,255,255,.22)"; ctx.beginPath(); ctx.moveTo(x-7,y); ctx.lineTo(x,y); ctx.lineTo(x-2,y+5); ctx.closePath(); ctx.fill(); }
+  ctx.restore();
+}
+
 // ===================== intro splash =====================
 let introT = 0;
 const easeOutBack=(x)=>{ const c=2.2; return 1+ (c+1)*Math.pow(x-1,3)+c*Math.pow(x-1,2); };
@@ -3351,9 +3390,13 @@ function drawIntro(){
   for(let i=0;i<4;i++){ const a=Math.sin(T*0.025+i*1.7)*0.6; ctx.fillStyle=i%2?"#7CFC6A":"#42e8ff";
     ctx.beginPath(); ctx.moveTo(VW/2,VH+60); ctx.lineTo(VW/2+Math.cos(a-1.6)*1000,-60); ctx.lineTo(VW/2+Math.cos(a-1.34)*1000,-60); ctx.closePath(); ctx.fill(); }
   ctx.restore();
-  // 4) swirling, pulsing kush leaves
+  // 4) swirling decorations — kush leaves, with ⚽ soccer balls mixed in during the World Cup menu theme
+  const _wcIntro=seasonTheme()==="worldcup";
   for(let i=0;i<30;i++){ const x=((i*97 + T*1.6)%(VW+80))-40, y=((i*131 + T*3.0)%(VH+80))-40;
-    ctx.save(); ctx.translate(x,y); ctx.rotate(T*0.05+i); ctx.globalAlpha=0.42; const s=0.4+0.2*Math.sin(T*0.12+i); ctx.scale(s,s); drawLeaf7(); ctx.restore(); }
+    ctx.save(); ctx.translate(x,y); ctx.rotate(T*0.05+i); ctx.globalAlpha=0.42; const s=0.4+0.2*Math.sin(T*0.12+i); ctx.scale(s,s);
+    if (_wcIntro && i%3===0){ ctx.globalAlpha=0.5; ctx.drawImage(ballSprite(),-26,-28); } else drawLeaf7();
+    ctx.restore(); }
+  if (_wcIntro) drawWorldCupBunting(7);
   // 5) neon confetti rain
   ctx.save();
   for(let i=0;i<46;i++){ const x=((i*173 + T*4)%(VW+40))-20, y=((i*61 + T*6.5)%(VH+40))-20;
@@ -3728,12 +3771,14 @@ function drawFlagPicker(x, y, w, h){
 
 function drawTitle(){
   ctx.fillStyle="rgba(6,10,20,.55)"; ctx.fillRect(0,0,VW,VH);
+  if (Chat.available() && Date.now()-Chat.lastFetch > 15000) Chat.fetch();   // keep the 💬 unread badge fresh while idling on the menu
   const wide = VW>=600;
   const pad=18, w=Math.min(wide?920:460, VW-2*pad), x0=(VW-w)/2, cx=VW/2;
   panel(x0, 12, w, VH-24);
+  if (seasonTheme()==="worldcup") drawWorldCupBunting(6);                                  // ⚽ World-Cup menu dressing
   drawLogo(cx, wide?78:60, Math.min(wide?0.5:0.42, w/(wide?1060:560)), frameCount);
   ctx.textAlign="center";
-  { const _mut=seasonMutator(); ctx.fillStyle="#9fe8ff"; ctx.font=(wide?"bold 12px":"bold 9px")+" 'Trebuchet MS'";
+  { const _mut=seasonMutator(); ctx.fillStyle=_mut.key==="worldcup"?"#ffd54a":"#9fe8ff"; ctx.font=(wide?"bold 12px":"bold 9px")+" 'Trebuchet MS'";
     ctx.fillText(_mut.emoji+" SEASON "+seasonLabel()+" TWIST: "+_mut.name, cx, wide?168:144); }
   const empty=!(DB.name&&DB.name.trim());
   const nameCol = (empty&&(needName>0||Math.floor(frameCount/24)%2===0)) ? "#ff6b6b" : "#7CFC6A";
@@ -3750,7 +3795,7 @@ function drawTitle(){
     button(Lx, 372, colW/2-4, 38, "🛍  SHOP", ()=>openShop(), "rgba(255,213,74,.18)");
     button(Lx+colW/2+4, 372, colW/2-4, 38, "🎖  PASS", ()=>openPass(), "rgba(201,160,255,.20)");
     button(Lx, 416, colW/2-4, 38, "📖  HOW TO", ()=>openGuide("title"), "rgba(88,166,255,.18)");
-    button(Lx+colW/2+4, 416, colW/2-4, 38, "💬  CHAT", ()=>openChat(), "rgba(88,166,255,.18)");
+    button(Lx+colW/2+4, 416, colW/2-4, 38, "💬  CHAT", ()=>openChat(), "rgba(88,166,255,.18)"); drawChatBadge(Lx+colW/2+4, 416, colW/2-4);
     ctx.textAlign="center"; ctx.fillStyle="#8298ba"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText("← → run · SPACE jump · F shoot", Lcx, 470);
     linkText("ℹ️  How to play fullscreen", Lcx, 494, ()=>{ G.scene="howto"; });
     drawBoardTabs(Rcx, 180, false);
@@ -3767,7 +3812,7 @@ function drawTitle(){
     button(ix, 280, iw/2-4, 34, "🛍  SHOP", ()=>openShop(), "rgba(255,213,74,.18)");
     button(ix+iw/2+4, 280, iw/2-4, 34, "🎖  PASS", ()=>openPass(), "rgba(201,160,255,.20)");
     button(ix, 318, iw/2-4, 32, "📖  HOW TO", ()=>openGuide("title"), "rgba(88,166,255,.18)");
-    button(ix+iw/2+4, 318, iw/2-4, 32, "💬  CHAT", ()=>openChat(), "rgba(88,166,255,.18)");
+    button(ix+iw/2+4, 318, iw/2-4, 32, "💬  CHAT", ()=>openChat(), "rgba(88,166,255,.18)"); drawChatBadge(ix+iw/2+4, 318, iw/2-4);
     drawBoardTabs(cx, 356, true);
     ctx.textAlign="center"; ctx.fillStyle="#8fa6c8"; ctx.font="10px 'Trebuchet MS'";
     ctx.fillText((Board.view==="season" ? ("🏁 ends in "+fmtCountdown(seasonEndMs())) : ("🏆 all seasons"))+" · "+Board.statusLine(), cx, 392);
@@ -3981,7 +4026,7 @@ function drawChat(){
   ctx.fillStyle="#8fa6c8"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText(Chat.statusLine(), cx, 59);
   ctx.fillStyle="#ffd54a"; ctx.font="10px 'Trebuchet MS'"; ctx.fillText("💡 turn FEEDBACK ON to suggest changes to the game", cx, 73);
   ctx.textAlign="left";
-  Chat.fetch();                                              // self-throttled background poll while the tab is open
+  Chat.fetch(); Chat.markSeen();                             // poll + mark everything read while the tab is open (clears the 💬 badge)
   // ----- scrollable message list -----
   const bx=x0+14, bw2=w-28, by=82, bh=(VH-110)-by;
   chatRect={x:bx, y:by, w:bw2, h:bh};
