@@ -217,6 +217,23 @@ const DB = {
 // Drawn as tiny vector flags (not emoji) so they render on every platform — Windows shows
 // flag emojis as plain letters. "WW" = rest of the world (little globe).
 const FLAG_OPTS = [ {cc:"MY", label:"MALAYSIA"}, {cc:"NL", label:"NETHERLANDS"}, {cc:"WW", label:"OTHER"} ];
+// ⚽ WORLD CUP national-team kits — used ONLY when worldCupSkin is true (enemy torso recolor).
+// shirt = jersey body, trim = collar/shade tone. Inert (never read) outside World Cup season.
+const TEAMS = {
+  BRA:{name:"BRAZIL",      shirt:"#f7d417", trim:"#1c8a3b"},
+  ARG:{name:"ARGENTINA",   shirt:"#6c9fd6", trim:"#ffffff"},
+  FRA:{name:"FRANCE",      shirt:"#1e3a8a", trim:"#ce1126"},
+  GER:{name:"GERMANY",     shirt:"#eeeeee", trim:"#141414"},
+  ENG:{name:"ENGLAND",     shirt:"#f2f2f2", trim:"#c8102e"},
+  NED:{name:"NETHERLANDS", shirt:"#ea5a13", trim:"#1a1a1a"},
+  ESP:{name:"SPAIN",       shirt:"#c60b1e", trim:"#ffd200"},
+  POR:{name:"PORTUGAL",    shirt:"#b5121b", trim:"#2e6b2e"},
+  ITA:{name:"ITALY",       shirt:"#1f6fb2", trim:"#ffffff"},
+  BEL:{name:"BELGIUM",     shirt:"#b71234", trim:"#f3d02f"},
+  CRO:{name:"CROATIA",     shirt:"#d22631", trim:"#ffffff"},
+  JPN:{name:"JAPAN",       shirt:"#0b3d91", trim:"#ffffff"},
+};
+const TEAM_CODES = Object.keys(TEAMS);
 function drawFlag(cc, x, y, w, h){
   if (!cc) return;
   if (cc==="MY"){
@@ -1615,7 +1632,7 @@ function pickEnemyType(diff){
   return "cop_aggro";
 }
 function mkEnemy(type, x){
-  const base={type,x,dead:false,squish:0,t:rnd(0,6.28),hp:1,aggro:false};
+  const base={type,x,dead:false,squish:0,t:rnd(0,6.28),hp:1,aggro:false,country:TEAM_CODES[irnd(0,TEAM_CODES.length-1)]};   // ⚽ national team assigned once at spawn (only used when worldCupSkin)
   if (type==="dealer")   return {...base,y:GROUND_TOP-44,w:38,h:44,vx:(Math.random()<.5?-1:1)*rnd(.8,1.4),homeL:x-rnd(40,90),homeR:x+rnd(40,90)};
   if (type==="cop")      return {...base,y:GROUND_TOP-46,w:38,h:46,vx:(Math.random()<.5?-1:1)*rnd(1.1,1.7),homeL:x-rnd(50,100),homeR:x+rnd(50,100)};
   if (type==="cop_s")    return {...base,y:GROUND_TOP-38,w:30,h:38,vx:(Math.random()<.5?-1:1)*rnd(1.8,2.6),homeL:x-rnd(60,120),homeR:x+rnd(60,120)};
@@ -1927,6 +1944,7 @@ function damageEnemy(e,dmg,src){
     sfx.stomp(); flash=Math.max(flash,5);
     puff(e.x+e.w/2,e.y+e.h/2,10,"#cfe0ff",true);
     for(let i=0;i<2;i++) particles.push({x:e.x+e.w/2,y:e.y,vx:rnd(-2,2),vy:rnd(-4,-1),life:22,max:22,r:5,col:"#7CFC6A",kind:"smoke"});
+    if (worldCupSkin && !lowFX) for(let i=0;i<10;i++) particles.push({x:e.x+e.w/2,y:e.y+e.h/2,vx:rnd(-3,3),vy:rnd(-5,-1),life:irnd(24,46),max:46,r:rnd(2,4),col:`hsl(${irnd(0,360)} 85% 60%)`,kind:"spark"});   // ⚽ GOAL! confetti
   }
 }
 
@@ -2293,10 +2311,14 @@ function drawBackground(th){
     ctx.fillStyle="rgba(255,247,214,.9)"; ctx.beginPath(); ctx.arc(VW*0.78,VH*0.24-cam.y*0.05,46,0,6.28); ctx.fill();
   }
 
-  if (th.id==="city")   drawCityBg(false);
-  else if (th.id==="night") drawCityBg(true);
-  else if (th.id==="desert") drawDesertBg();
-  else if (th.id==="lava") drawLavaBg();
+  if (worldCupSkin){
+    drawStadiumBg(level % 4);      // ⚽ 4 distinct stadiums, one per biome slot in the level cycle
+  } else {
+    if (th.id==="city")   drawCityBg(false);
+    else if (th.id==="night") drawCityBg(true);
+    else if (th.id==="desert") drawDesertBg();
+    else if (th.id==="lava") drawLavaBg();
+  }
 
   drawClouds(th);
 }
@@ -2385,6 +2407,67 @@ function drawLavaBg(){
 function volcano(x,baseY,s){ ctx.beginPath(); ctx.moveTo(x,baseY); ctx.lineTo(x+s*0.35,baseY-s*0.7); ctx.lineTo(x+s*0.5,baseY-s*0.62); ctx.lineTo(x+s*0.65,baseY-s*0.7); ctx.lineTo(x+s,baseY); ctx.closePath(); ctx.fill();
   ctx.fillStyle=(frameCount%30<15)?"#ff7a2a":"#ff5a1a"; ctx.fillRect(x+s*0.42,baseY-s*0.7,s*0.16,8); ctx.fillStyle="#2a1116"; }
 
+// ⚽ WORLD CUP stadiums — 4 cached static panels blitted with parallax (same pattern as the KL skyline).
+// Static art is rendered once into an offscreen sprite; only cheap live extras draw on top. Only used when worldCupSkin.
+const STAD_BASE=360, STAD_W=1200, _stadCache={};
+const STAD_PALETTES=[
+  { tier:"#2c5580", stand:"#3a6ea5", roof:"#22304a", seat:"#cde0f5", accent:"#ffd54a" }, // 0 blue arena
+  { tier:"#5e2c2c", stand:"#7a3a3a", roof:"#3a1f1f", seat:"#f0d0c0", accent:"#7CFC6A" }, // 1 red bowl
+  { tier:"#2c5e38", stand:"#3a7a4a", roof:"#1f3a26", seat:"#d8f0d0", accent:"#ff7a1a" }, // 2 green stand
+  { tier:"#44285e", stand:"#5a3a7a", roof:"#2e1f3a", seat:"#e0d0f0", accent:"#42e8ff" }, // 3 night arena
+];
+function stadiumSprite(variant){
+  const key="s"+variant;
+  if(!_stadCache[key]) _stadCache[key]=makeSprite(STAD_W, STAD_BASE+20, c=> stadiumPanel(STAD_BASE, variant, c));
+  return _stadCache[key];
+}
+function stadiumPanel(baseY, variant, c){
+  const P=STAD_PALETTES[variant];
+  c.fillStyle=P.tier; c.fillRect(0,baseY-200,STAD_W,150);                 // back tier slab
+  for(let yy=baseY-196; yy<baseY-58; yy+=7)                               // static crowd speckle
+    for(let xx=6; xx<STAD_W-6; xx+=7){ c.fillStyle=((xx*7+yy*13+variant)%5)?P.seat:"#ffffff"; c.fillRect(xx,yy,4,4); }
+  c.fillStyle=P.stand; c.fillRect(0,baseY-60,STAD_W,14);                  // lower-rail divider
+  c.fillStyle=P.roof;  c.fillRect(0,baseY-210,STAD_W,12);                 // roof beam
+  for(let x=20;x<STAD_W;x+=46){                                           // flag bunting along the roof
+    c.fillStyle=((x/46|0)%2)?P.accent:"#ffffff";
+    c.beginPath(); c.moveTo(x,baseY-208); c.lineTo(x+22,baseY-208); c.lineTo(x+11,baseY-196); c.closePath(); c.fill();
+  }
+  for(const px of [140+variant*30, STAD_W-180-variant*30]){              // floodlight pylons (variant-shifted)
+    c.fillStyle="#888"; c.fillRect(px-2,baseY-300,4,120);
+    c.fillStyle="#cfd6e0"; c.fillRect(px-22,baseY-318,44,22);
+    c.fillStyle="rgba(255,255,210,.9)";
+    for(let i=0;i<12;i++) c.fillRect(px-20+(i%4)*11, baseY-316+((i/4|0)*7), 8, 5);
+  }
+  const bsx=(variant%2)? STAD_W-360 : 230;                               // big-screen frame (live flicker added later)
+  c.fillStyle="#0a0a0a"; c.fillRect(bsx,baseY-300,150,92);
+  c.fillStyle=P.accent;  c.fillRect(bsx-3,baseY-303,156,4);
+  const gx=STAD_W/2-70;                                                   // goal frame + net
+  c.strokeStyle="#ffffff"; c.lineWidth=4; c.strokeRect(gx,baseY-70,140,60);
+  c.strokeStyle="rgba(255,255,255,.35)"; c.lineWidth=1;
+  for(let nx=gx+10; nx<gx+140; nx+=12){ c.beginPath(); c.moveTo(nx,baseY-66); c.lineTo(nx,baseY-12); c.stroke(); }
+  for(let ny=baseY-66; ny<baseY-10; ny+=12){ c.beginPath(); c.moveTo(gx+4,ny); c.lineTo(gx+136,ny); c.stroke(); }
+}
+function drawStadiumBg(variant){
+  const baseY=GROUND_TOP+6-cam.y*0.1;
+  const par=0.20, off=((cam.x*par)%STAD_W+STAD_W)%STAD_W;
+  const spr=stadiumSprite(variant), by=Math.round(baseY-STAD_BASE), bsx=(variant%2)? STAD_W-360 : 230;
+  for(let p=-1;p<=Math.ceil(VW/STAD_W)+1;p++){
+    const ox=Math.round(p*STAD_W-off);
+    ctx.drawImage(spr, ox, by);
+    ctx.fillStyle=(frameCount%50<25)?"rgba(120,220,255,.5)":"rgba(255,210,120,.5)";  // big-screen flicker (1 rect)
+    ctx.fillRect(ox+bsx+8, by+STAD_BASE-294, 134, 78);
+  }
+  if(!lowFX){
+    const a=0.04+0.03*Math.max(0,Math.sin(frameCount*0.05));               // crowd-roar shimmer (no new state)
+    ctx.fillStyle="rgba(255,255,255,"+a.toFixed(3)+")"; ctx.fillRect(0,baseY-60,VW,16);
+    ctx.fillStyle=STAD_PALETTES[variant].accent;                           // pitch-side corner flags (waving)
+    for(let fx=((-cam.x*0.3)%240+240)%240-240; fx<VW; fx+=240){
+      const sw=Math.sin((fx+frameCount*3)*0.05)*2;
+      ctx.fillRect(fx,baseY-26,2,26);
+      ctx.beginPath(); ctx.moveTo(fx+2,baseY-26); ctx.lineTo(fx+12,baseY-23+sw); ctx.lineTo(fx+2,baseY-18); ctx.closePath(); ctx.fill();
+    }
+  }
+}
 let cloudSeed=[]; for(let i=0;i<12;i++) cloudSeed.push({x:rnd(0,4000),y:rnd(20,200),s:rnd(.6,1.4),spd:rnd(.1,.35)});
 function drawClouds(th){
   ctx.fillStyle= th.night?"rgba(180,180,210,.35)":"rgba(255,255,255,.85)";
@@ -2438,13 +2521,23 @@ function drawPlatforms(th){
   }
 }
 function drawGround(p,th){
+  if (worldCupSkin){                              // ⚽ football pitch — LOCAL override only, THEMES untouched (auto-reverts next season)
+    th={ id:"pitch", grass:"#1f8a3a", grassDk:"#13682a", soil:"#0f5824", soilLine:"rgba(255,255,255,.10)", accent:th.accent };
+  }
   ctx.fillStyle=th.grass; ctx.fillRect(p.x,p.y,p.w,16);
   ctx.fillStyle=th.grassDk; ctx.fillRect(p.x,p.y+12,p.w,6);
   ctx.fillStyle=th.soil; ctx.fillRect(p.x,p.y+16,p.w,p.h-16);
   ctx.strokeStyle=th.soilLine; ctx.lineWidth=2;
   for(let yy=p.y+18;yy<p.y+Math.min(p.h,160);yy+=20){ ctx.beginPath(); ctx.moveTo(p.x,yy); ctx.lineTo(p.x+p.w,yy); ctx.stroke(); }
-  if (th.id==="city"||th.id==="night"){ ctx.fillStyle=th.grassDk; for(let xx=p.x+6;xx<p.x+p.w;xx+=22){ ctx.fillRect(xx,p.y-4,3,6); ctx.fillRect(xx+5,p.y-6,3,8);} }
-  if (th.id==="desert"){ ctx.fillStyle="#cf9a3a"; for(let xx=p.x+10;xx<p.x+p.w;xx+=60){ ctx.fillRect(xx,p.y-8,4,10); ctx.fillRect(xx-4,p.y-3,12,3);} }
+  if (worldCupSkin){                              // mowing stripes (alt bands keyed to world-x) + a halfway line
+    for(let xx=Math.floor(p.x/80)*80; xx<p.x+p.w; xx+=80){
+      if(((xx/80)|0)%2){ ctx.fillStyle="rgba(255,255,255,.05)"; ctx.fillRect(Math.max(xx,p.x),p.y,Math.min(80,p.x+p.w-xx),16); }
+      if(((xx/80)|0)%8===0){ ctx.fillStyle="rgba(255,255,255,.55)"; ctx.fillRect(xx,p.y,3,16); }
+    }
+  } else {
+    if (th.id==="city"||th.id==="night"){ ctx.fillStyle=th.grassDk; for(let xx=p.x+6;xx<p.x+p.w;xx+=22){ ctx.fillRect(xx,p.y-4,3,6); ctx.fillRect(xx+5,p.y-6,3,8);} }
+    if (th.id==="desert"){ ctx.fillStyle="#cf9a3a"; for(let xx=p.x+10;xx<p.x+p.w;xx+=60){ ctx.fillRect(xx,p.y-8,4,10); ctx.fillRect(xx-4,p.y-3,12,3);} }
+  }
 }
 function drawBrick(p){
   ctx.fillStyle="#c8782e"; ctx.fillRect(p.x,p.y,p.w,p.h);
@@ -2748,15 +2841,15 @@ function drawCop(e){
   ctx.fillStyle="rgba(0,0,0,.18)"; ctx.beginPath(); ctx.ellipse(x+w/2,y+h+2,w*.5,5,0,0,6.28); ctx.fill();
   const isDealer=e.type==="dealer";
   if (isDealer){
-    ctx.fillStyle="#3a3140"; ctx.fillRect(x+4,y+16,w-8,h-16);
-    ctx.fillStyle="#2b2430"; ctx.fillRect(x+4,y+16,(w-8)/2,h-16);
+    ctx.fillStyle=(worldCupSkin&&e.country)?TEAMS[e.country].shirt:"#3a3140"; ctx.fillRect(x+4,y+16,w-8,h-16);
+    ctx.fillStyle=(worldCupSkin&&e.country)?TEAMS[e.country].trim:"#2b2430"; ctx.fillRect(x+4,y+16,(w-8)/2,h-16);
     ctx.fillStyle="#caa07a"; ctx.beginPath(); ctx.arc(x+w/2,y+12,11,0,6.28); ctx.fill();
     ctx.fillStyle="#7a1f1f"; ctx.beginPath(); ctx.arc(x+w/2,y+9,11,Math.PI,0); ctx.fill(); ctx.fillRect(x+w/2-11,y+8,22,4);
     ctx.fillStyle="#111"; ctx.fillRect(x+w/2-9,y+10,18,5);
   } else {
     // police: navy uniform, badge, cap
     const aggro=e.type==="cop_aggro", big=e.type==="cop_big";
-    ctx.fillStyle= aggro?"#15294f":"#1d3a6e"; ctx.fillRect(x+4,y+16,w-8,h-16);
+    ctx.fillStyle=(worldCupSkin&&e.country)?TEAMS[e.country].shirt:(aggro?"#15294f":"#1d3a6e"); ctx.fillRect(x+4,y+16,w-8,h-16);
     ctx.fillStyle="rgba(255,255,255,.12)"; ctx.fillRect(x+4,y+16,(w-8)/2,h-16);
     // belt
     ctx.fillStyle="#0a0a0a"; ctx.fillRect(x+4,y+h-16,w-8,5);
@@ -2786,8 +2879,8 @@ function drawBoss(e){
   if(dead){ const sq=clamp(e.squish/10,0,1); ctx.translate(x+w/2,y+h); ctx.scale(1,1-sq*0.6); ctx.translate(-(x+w/2),-(y+h)); }
   ctx.fillStyle="rgba(0,0,0,.22)"; ctx.beginPath(); ctx.ellipse(cxp,y+h+2,w*.5,6,0,0,6.28); ctx.fill();
   // suit (per-boss colour) with a shaded half
-  ctx.fillStyle=bd.suit; ctx.fillRect(x+6,y+22,w-12,h-22);
-  ctx.fillStyle=bd.shade; ctx.fillRect(x+6,y+22,(w-12)/2,h-22);
+  ctx.fillStyle=(worldCupSkin&&e.country)?TEAMS[e.country].shirt:bd.suit; ctx.fillRect(x+6,y+22,w-12,h-22);
+  ctx.fillStyle=(worldCupSkin&&e.country)?TEAMS[e.country].trim:bd.shade; ctx.fillRect(x+6,y+22,(w-12)/2,h-22);
   // accent chain + medallion
   ctx.strokeStyle=bd.accent; ctx.lineWidth=3; ctx.beginPath(); ctx.arc(cxp,y+28,10,0.1,Math.PI-0.1); ctx.stroke();
   ctx.fillStyle=bd.accent; ctx.fillRect(cxp-3,y+36,6,6);
