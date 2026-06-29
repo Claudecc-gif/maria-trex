@@ -1380,10 +1380,11 @@ function makeSprite(w,h,drawFn){ const cv=document.createElement("canvas"); cv.w
 
 // ---------------- state ----------------
 const G = { scene:"intro", paused:false };
-let player, cam, platforms, pits, weeds, floatPickups, enemies, bongs, stars, cannons, wings, hiddens, projectiles, bossShots, particles, banners;
+let player, cam, platforms, pits, weeds, floatPickups, enemies, bongs, stars, cannons, wings, hiddens, balls, projectiles, bossShots, particles, banners;
 let genX, score, lives, distance, frameCount, flash, hitTimer, dead, deadTimer, overReason;
 let speedTimer, starTimer, flyTimer, ammo, fireCd, level, levelFlash, hidden;
 let weapon, streak, chopper, gravNow, twistKey, worldCupSkin=false;   // current gun key · kill-streak · active 🚁 air-support · per-run gravity scalar · cached season-twist key · ⚽ soccer-skin flag (cached so the pickup draw never calls season-date fns on the hot path)
+let pitHops=0, lastHopPitX=-99999;   // ⚽ World-Cup BALL buff: pits left to auto-hop · world-X of the last pit already hopped (1 hop per distinct pit)
 let chaseX, chaseSpeed, bribeUsed, hanging, hangTimer, hangX, slowmo, bossAlive, bossSpawnDist;
 let castleT, towerLevel;           // castle-entry cinematic timer; last level a KL-Towers obstacle spawned
 let petX, petY, petFlap, petPuffCd;   // 🦅 eagle companion: smoothed follow pos + wing-flap phase + smoke cooldown
@@ -1396,12 +1397,12 @@ function resetWorld(forDemo){
   player = { x:140, y:GROUND_TOP-58, w:46, h:58, vx:0, vy:0, onGround:false, facing:1,
              coyote:0, buffer:0, jumpHeld:false, runPhase:0, blink:0, squash:0, stretch:1, trampHold:false };
   cam={x:0,y:0};
-  platforms=[]; pits=[]; weeds=[]; floatPickups=[]; enemies=[]; bongs=[]; stars=[]; cannons=[]; wings=[]; hiddens=[];
+  platforms=[]; pits=[]; weeds=[]; floatPickups=[]; enemies=[]; bongs=[]; stars=[]; cannons=[]; wings=[]; hiddens=[]; balls=[];
   projectiles=[]; bossShots=[]; particles=[]; banners=[];
   genX=0; score=0; lives=3; distance=0; frameCount=0; flash=0; hitTimer=0; hidden=0;
   dead=false; deadTimer=0; overReason="busted";
   speedTimer=0; starTimer=0; flyTimer=0; ammo=0; fireCd=0; level=0; levelFlash=0;
-  weapon="joint"; streak=0; chopper=null; gravNow=gravFor(); twistKey=seasonMutator().key; worldCupSkin=(twistKey==="worldcup");   // cache gravity + twist + ⚽ skin once (off the physics hot path)
+  weapon="joint"; streak=0; chopper=null; gravNow=gravFor(); twistKey=seasonMutator().key; worldCupSkin=(twistKey==="worldcup"); pitHops=0; lastHopPitX=-99999;   // cache gravity + twist + ⚽ skin once (off the physics hot path); clear the ball buff
   chaseX=-540; chaseSpeed=3.05; bribeUsed=false; hanging=false; hangTimer=0; hangX=0; slowmo=0;
   bossAlive=false; bossSpawnDist=320; castleT=0; towerLevel=-1;
   petX=player.x-70; petY=player.y-70; petFlap=0; petPuffCd=0;   // 🦅 eagle starts just behind/above
@@ -1566,6 +1567,11 @@ function generateSegment(){
     const bx=sx+irnd(60,SEG_W-60);
     if(!inPit(bx)) bongs.push({x:bx,y:GROUND_TOP-40,w:26,h:40,bob:rnd(0,6.28),taken:false});
   }
+  // ⚽ WORLD CUP BALL — dedicated soccer-ball power-up; spawns ONLY during World Cup season (cached flag, no date math on this hot path)
+  if (worldCupSkin && Math.random()<0.12 && sx>1100){
+    const bbx=sx+irnd(60,SEG_W-60);
+    if(!inPit(bbx)) balls.push({x:bbx,y:GROUND_TOP-40,w:26,h:26,bob:rnd(0,6.28),taken:false});
+  }
 
   // BLOW CANNON pickup — each crate holds a different gun. ARMS DEALER WEEK twist makes them far more common
   if (Math.random()<(twistKey==="armory"?0.42:0.13) && sx>1300){
@@ -1645,6 +1651,7 @@ function update(){
   floatPickups = floatPickups.filter(o=>!o.taken && o.x>cull);
   enemies = enemies.filter(o=> o.x>cull-260 && o.squish<34);
   bongs = bongs.filter(o=>!o.taken && o.x>cull);
+  balls = balls.filter(o=>!o.taken && o.x>cull);
   stars = stars.filter(o=>!o.taken && o.x>cull);
   cannons = cannons.filter(o=>!o.taken && o.x>cull);
   wings = wings.filter(o=>!o.taken && o.x>cull);
@@ -1730,6 +1737,16 @@ function update(){
 
   // fell / lava
   const cx=player.x+player.w/2;
+  // ⚽ World-Cup BALL buff — auto-hop the next 3 DISTINCT pits instead of falling in (covers void-fall AND lava)
+  if (pitHops>0 && player.vy>=0 && player.y+player.h>GROUND_TOP-2 && inPit(cx)){
+    const pp=pits.find(p=> cx>=p.x && cx<=p.x+p.w);
+    if (pp && pp.x!==lastHopPitX){
+      lastHopPitX=pp.x; pitHops--;
+      player.vy=-JUMP_V*1.1; player.onGround=false; player.coyote=0; player.stretch=1.18;   // strong enough to clear SAFE_GAP (140)
+      sfx.bounce(); puff(cx, player.y+player.h, 8, "#ffe9a6"); screenShakeAdd(2);
+      addBanner("⚽ HEADER!", pitHops+" bounce"+(pitHops===1?"":"s")+" left", "#ffd54a", 50);
+    }
+  }
   if (player.y>DEATH_Y){ die("fell"); }
   else if (curTheme().lava && inPit(cx) && player.y+player.h>GROUND_TOP+8){ lavaSplash(cx); die("lava"); }
 
@@ -1799,6 +1816,16 @@ function resolveY(prevFeet){
 
 function updateProjectiles(){
   for (const j of projectiles){
+    if (j.kind==="ball"){                                       // ⚽ World-Cup cannon-ball: horizontal at bong pace, PIERCES & kills every enemy it overlaps (mows the whole line)
+      j.x += j.vx; j.life--;
+      if (!lowFX && frameCount%2===0) particles.push({x:j.x-(j.vx>0?12:-12),y:j.y+7,vx:rnd(-.5,.5),vy:rnd(-.6,0),life:14,max:14,r:rnd(2,4),col:"rgba(210,220,235,.7)",kind:"smoke"});
+      const hb={x:j.x-j.r,y:j.y-j.r,w:j.r*2,h:j.r*2};
+      for (const e of enemies){
+        if (e.dead || j.pierced.indexOf(e)>=0) continue;        // never double-hit the same enemy
+        if (aabb(hb,e)){ j.pierced.push(e); damageEnemy(e, j.dmg||99, "ball"); flash=Math.max(flash,5); screenShakeAdd(2); }
+      }
+      continue;                                                 // never dies on a hit — only life/off-screen cull
+    }
     const laser = j.kind==="laser";
     j.x+=j.vx; if(!laser) j.vy+=0.05; j.y+=j.vy; j.life--;     // laser ignores gravity → dead straight
     if (!laser && frameCount%2===0) particles.push({x:j.x,y:j.y,vx:rnd(-.4,.4),vy:rnd(-.6,-.1),life:14,max:14,r:rnd(2,4),col:"rgba(220,220,220,.8)",kind:"smoke"});
@@ -1990,6 +2017,16 @@ function updatePickups(){
   for (const hd of hiddens){ if(hd.taken)continue; hd.bob+=0.08; hd.t+=0.1;
     if (aabb(player,hd)){ hd.taken=true; hidden++; sfx.collect();
       for(let i=0;i<10;i++) particles.push({x:hd.x+hd.w/2,y:hd.y+hd.h/2,vx:rnd(-2,2),vy:rnd(-2.4,.4),life:irnd(18,30),max:30,r:rnd(2,4),col:`hsl(${irnd(270,320)} 90% 70%)`,kind:"spark"}); } }
+  // ⚽ WORLD CUP BALL — kick a piercing cannon-ball forward at BONG pace + arm the bounce-over-3-pits buff
+  for (const bl of balls){ if(bl.taken)continue; bl.bob+=0.08;
+    if (aabb(player,bl)){ bl.taken=true;
+      projectiles.push({ x:player.x+player.w/2+player.facing*24, y:player.y+player.h*0.55,
+        vx:player.facing*BOOST_SPD, vy:0, life:240, dmg:99, r:15, col:"#f5f8fc", kind:"ball", pierced:[], spin:0 });   // travels at the bong's boosted speed (8.6), dead straight
+      pitHops=3; lastHopPitX=-99999;                              // arm the auto-hop-next-3-pits buff
+      sfx.bong(); flash=10; screenShakeAdd(6);
+      addBanner("⚽ WORLD CUP BALL!","Cannon-ball clears the pitch · bounce 3 pits","#ffd54a",120);
+      puff(bl.x+bl.w/2,bl.y,18,"#ffe9a6",true);
+    } }
 }
 
 function updateChase(){
@@ -2480,6 +2517,7 @@ function drawPickups(){
   for(const s of stars){ if(s.taken)continue; if(s.x<cam.x-40||s.x>camRightX())continue; drawCaliStar(s.x,s.y+Math.sin(s.bob)*5,s.t); }
   for(const wg of wings){ if(wg.taken)continue; if(wg.x<cam.x-40||wg.x>camRightX())continue; drawWingsPickup(wg.x,wg.y+Math.sin(wg.bob)*5); }
   for(const hd of hiddens){ if(hd.taken)continue; if(hd.x<cam.x-40||hd.x>camRightX())continue; drawHiddenPickup(hd.x,hd.y+Math.sin(hd.bob)*5,hd.t); }
+  for(const bl of balls){ if(bl.taken)continue; if(bl.x<cam.x-40||bl.x>camRightX())continue; drawBallPickup(bl.x,bl.y+Math.sin(bl.bob)*4); }
 }
 function drawHiddenPickup(x,y,t){
   // subtle shimmering violet gem — easy to overlook
@@ -2548,6 +2586,7 @@ function ballSprite(){
   }));
 }
 function drawWeed(x,y){ ctx.drawImage(weedSprite(), x-14, y-12); }   // in-game pickup is always the kush plant (the ⚽ World-Cup skin lives in the MENUS now, not gameplay)
+function drawBallPickup(x,y){ ctx.drawImage(ballSprite(), x-13, y-15); }   // ⚽ World-Cup BALL power-up pickup — reuses the cached ballSprite, centered on the 26×26 box
 // bong / cannon: static body cached as a sprite; only the wisp of smoke is drawn live
 let _bongSpr=null;
 function bongSprite(){
@@ -2634,6 +2673,12 @@ function drawCaliStar(x,y,t){
 function drawProjectiles(){
   for(const j of projectiles){
     const dir=j.vx>0?1:-1;
+    if (j.kind==="ball"){                                        // ⚽ rolling World-Cup cannon-ball
+      j.spin=(j.spin||0)+0.3*dir;
+      if (!lowFX && frameCount%2===0) particles.push({x:j.x-dir*14,y:j.y+8,vx:rnd(-.4,.4),vy:rnd(-.5,0),life:12,max:12,r:rnd(2,4),col:"rgba(200,210,225,.6)",kind:"smoke"});
+      ctx.save(); ctx.translate(j.x,j.y); ctx.rotate(j.spin); ctx.drawImage(ballSprite(),-26,-28); ctx.restore();
+      continue;
+    }
     if (j.kind==="laser"){                                       // 🔆 glowing energy bolt
       ctx.save(); ctx.translate(j.x,j.y); ctx.rotate(Math.atan2(j.vy,j.vx));
       ctx.shadowColor=j.col||"#7CFFCB"; ctx.shadowBlur=10;
