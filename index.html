@@ -2670,22 +2670,35 @@ function drawBlock(p){
   ctx.fillStyle="#f0c060"; ctx.fillRect(p.x+2,p.y+2,p.w-4,3);
   ctx.fillStyle="#7a4a10"; for(const [dx,dy] of [[6,6],[p.w-12,6],[6,p.h-12],[p.w-12,p.h-12]]) ctx.fillRect(p.x+dx,p.y+dy,4,4);
 }
-// ⚽ World-Cup season skin for jump-on BLOCKS: a clean white soccer-ball panel with gold trim +
-// evenly-spaced black pentagons. Reads as "football" without the busy stadium backdrop.
+// ⚽ World-Cup season skin for jump-on BLOCKS: each block wears a different country's FLAG, framed
+// with a bold WHITE outline so it stays clearly visible against the sky/skyline. The country is
+// keyed to the block's world-x (stable — no flicker as it scrolls).
+const WC_FLAGS = ["BR","AR","FR","DE","IT","ES","NL","EN","JP","MX","BE","MY"];
 function drawWorldCupBlock(p){
-  ctx.fillStyle="#f4f6fa"; ctx.fillRect(p.x,p.y,p.w,p.h);              // white panel
-  ctx.fillStyle="#c4cdda"; ctx.fillRect(p.x,p.y+p.h-4,p.w,4);         // soft underside shadow
-  ctx.fillStyle="#ffd54a"; ctx.fillRect(p.x,p.y,p.w,3);               // gold top trim
-  const cy=p.y+p.h/2, r=Math.max(3, Math.min(5,(p.h-8)/2));
-  ctx.fillStyle="#1b2230";                                            // black soccer pentagons spaced along
-  for(let xx=p.x+15; xx<=p.x+p.w-9; xx+=28) pentaDot(xx, cy, r);
-  ctx.strokeStyle="rgba(27,34,48,.28)"; ctx.lineWidth=1;              // faint seams linking the pentagons
-  for(let xx=p.x+15; xx<=p.x+p.w-23; xx+=28){ ctx.beginPath(); ctx.moveTo(xx+r,cy); ctx.lineTo(xx+28-r,cy); ctx.stroke(); }
+  const cc = WC_FLAGS[Math.abs(Math.floor(p.x/40)) % WC_FLAGS.length];
+  blockFlag(cc, p.x, p.y, p.w, p.h);
+  ctx.lineWidth=3; ctx.strokeStyle="#ffffff"; ctx.strokeRect(p.x+1.5, p.y+1.5, p.w-3, p.h-3);   // white outline = contrast vs the backdrop
+  ctx.lineWidth=1; ctx.strokeStyle="rgba(0,0,0,.35)"; ctx.strokeRect(p.x+0.5, p.y+0.5, p.w-1, p.h-1);
 }
-function pentaDot(cx,cy,r){
-  ctx.beginPath();
-  for(let i=0;i<5;i++){ const a=-Math.PI/2 + i*2*Math.PI/5, x=cx+Math.cos(a)*r, y=cy+Math.sin(a)*r; if(i===0)ctx.moveTo(x,y); else ctx.lineTo(x,y); }
-  ctx.closePath(); ctx.fill();
+// compact, recognisable national flags drawn to fill a block rect (kept simple so they read small)
+function blockFlag(cc,x,y,w,h){
+  const T=h/3, V=w/3, R=(c)=>{ctx.fillStyle=c;};
+  if (cc==="BR"){ R("#089b3a"); ctx.fillRect(x,y,w,h);
+    R("#fdd116"); ctx.beginPath(); ctx.moveTo(x+w/2,y+2); ctx.lineTo(x+w-3,y+h/2); ctx.lineTo(x+w/2,y+h-2); ctx.lineTo(x+3,y+h/2); ctx.closePath(); ctx.fill();
+    R("#012169"); ctx.beginPath(); ctx.arc(x+w/2,y+h/2,h*0.22,0,6.28); ctx.fill(); }
+  else if (cc==="AR"){ R("#75aadb"); ctx.fillRect(x,y,w,h); R("#fff"); ctx.fillRect(x,y+T,w,T);
+    R("#f6b40e"); ctx.beginPath(); ctx.arc(x+w/2,y+h/2,h*0.12,0,6.28); ctx.fill(); }
+  else if (cc==="FR"){ R("#0055A4"); ctx.fillRect(x,y,V,h); R("#fff"); ctx.fillRect(x+V,y,V,h); R("#EF4135"); ctx.fillRect(x+2*V,y,w-2*V,h); }
+  else if (cc==="DE"){ R("#111"); ctx.fillRect(x,y,w,T); R("#DD0000"); ctx.fillRect(x,y+T,w,T); R("#FFCE00"); ctx.fillRect(x,y+2*T,w,h-2*T); }
+  else if (cc==="IT"){ R("#009246"); ctx.fillRect(x,y,V,h); R("#fff"); ctx.fillRect(x+V,y,V,h); R("#CE2B37"); ctx.fillRect(x+2*V,y,w-2*V,h); }
+  else if (cc==="ES"){ R("#AA151B"); ctx.fillRect(x,y,w,h); R("#F1BF00"); ctx.fillRect(x,y+h*0.25,w,h*0.5); }
+  else if (cc==="NL"){ R("#AE1C28"); ctx.fillRect(x,y,w,T); R("#fff"); ctx.fillRect(x,y+T,w,T); R("#21468B"); ctx.fillRect(x,y+2*T,w,h-2*T); }
+  else if (cc==="EN"){ R("#fff"); ctx.fillRect(x,y,w,h); R("#CE1124"); ctx.fillRect(x+w/2-3,y,6,h); ctx.fillRect(x,y+h/2-3,w,6); }
+  else if (cc==="JP"){ R("#fff"); ctx.fillRect(x,y,w,h); R("#BC002D"); ctx.beginPath(); ctx.arc(x+w/2,y+h/2,h*0.30,0,6.28); ctx.fill(); }
+  else if (cc==="MX"){ R("#006847"); ctx.fillRect(x,y,V,h); R("#fff"); ctx.fillRect(x+V,y,V,h); R("#CE1126"); ctx.fillRect(x+2*V,y,w-2*V,h); }
+  else if (cc==="BE"){ R("#111"); ctx.fillRect(x,y,V,h); R("#FDDA24"); ctx.fillRect(x+V,y,V,h); R("#EF3340"); ctx.fillRect(x+2*V,y,w-2*V,h); }
+  else if (cc==="MY"){ drawFlag("MY", x, y, w, h); }                  // reuse the detailed Malaysia flag (home nation)
+  else { R("#0a2440"); ctx.fillRect(x,y,w,h); }
 }
 function drawCloudPlat(p){
   ctx.fillStyle="rgba(255,255,255,.95)";
@@ -3984,16 +3997,21 @@ function drawTutorialUI(){
     pillBtn(VW/2+84, 8, 96, 28, "✕  EXIT", exitTutorial, "rgba(255,90,90,.3)");
   }
 
-  // coach caption (bottom-centre, above the on-screen touch controls)
+  // coach caption — pinned UP near the top (out of the way of the ground-level gameplay), sitting
+  // just below the banner row, with a see-through background so it never blocks the action.
   const z=tut.callout; if (!z) return;
   const W=Math.min(560, VW-28), X=(VW-W)/2;
   const bodyFont="13px 'Trebuchet MS'";
   const lines=wrapLines(z.b, bodyFont, W-28);
-  const H=30 + lines.length*17 + 10, Y=VH-94-H;
-  ctx.fillStyle="rgba(8,14,26,.92)"; roundRect(X,Y,W,H,12); ctx.fill();
+  const H=30 + lines.length*17 + 10;
+  const Y=(uiPortrait?122:104)+safeTop+32;          // clears the compact HUD + a single banner
+  ctx.fillStyle="rgba(6,12,22,.58)"; roundRect(X,Y,W,H,12); ctx.fill();
   ctx.strokeStyle=z.c; ctx.lineWidth=2; roundRect(X,Y,W,H,12); ctx.stroke();
-  ctx.textAlign="left"; ctx.fillStyle=z.c; ctx.font="bold "+fitFontSize(z.t,15,W-28,"bold")+"px 'Trebuchet MS'"; ctx.fillText(z.t, X+14, Y+22);
-  ctx.fillStyle="#dfe8f4"; ctx.font=bodyFont; let yy=Y+42; for(const ln of lines){ ctx.fillText(ln, X+14, yy); yy+=17; }
+  ctx.textAlign="left";
+  ctx.save(); ctx.shadowColor="rgba(0,0,0,.85)"; ctx.shadowBlur=3;   // keep text crisp over the transparent panel
+  ctx.fillStyle=z.c; ctx.font="bold "+fitFontSize(z.t,15,W-28,"bold")+"px 'Trebuchet MS'"; ctx.fillText(z.t, X+14, Y+22);
+  ctx.fillStyle="#eaf1fb"; ctx.font=bodyFont; let yy=Y+42; for(const ln of lines){ ctx.fillText(ln, X+14, yy); yy+=17; }
+  ctx.restore();
   ctx.textBaseline="alphabetic";
 }
 
