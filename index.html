@@ -1066,7 +1066,7 @@ function setKey(k,v){
     if (k==="escape" && (G.scene==="shop"||G.scene==="pass"||G.scene==="chat")) G.scene="title";
     if (k==="escape" && G.scene==="howto") leaveHowto();
     if (k==="escape" && G.scene==="guide") closeGuide();
-    if (k==="escape" && (G.scene==="play"||G.scene==="paused")) quitToMenu();
+    if (k==="escape" && (G.scene==="play"||G.scene==="paused")) { if (tut) exitTutorial(); else quitToMenu(); }   // 🎓 ESC out of the tutorial banks nothing
   }
 }
 addEventListener("keydown", e=>{
@@ -1249,6 +1249,12 @@ function onConfirm(){
   if (G.scene==="intro"){ leaveIntro(); return; }
   if (G.scene==="howto"){ leaveHowto(); return; }
   if (G.scene==="guide"){ closeGuide(); return; }
+  if (G.scene==="play" && tut && tut.modal){   // 🎓 ENTER advances the tutorial cards
+    if (tut.modal==="intro") tutResume();
+    else if (tut.modal==="finish"){ tut=null; startGame(); }
+    else { if (tut.finished) tut.modal="finish"; else tutResume(); }
+    return;
+  }
   if (G.scene==="title"||G.scene==="over") startGame();
   else if (G.scene==="shop"||G.scene==="pass") G.scene="title";
 }
@@ -1421,10 +1427,11 @@ let chaseX, chaseSpeed, bribeUsed, hanging, hangTimer, hangX, slowmo, bossAlive,
 let castleT, towerLevel;           // castle-entry cinematic timer; last level a KL-Towers obstacle spawned
 let petX, petY, petFlap, petPuffCd;   // 🦅 eagle companion: smoothed follow pos + wing-flap phase + smoke cooldown
 let demoMode=false;
+let tut=null;   // 🎓 interactive tutorial controller (null = not in a tutorial). Built by buildTutorialWorld().
 
 function curSkin(){ return skinById(DB.skin); }
 
-function resetWorld(forDemo){
+function resetWorld(forDemo, forTut){
   const sk = curSkin();
   player = { x:140, y:GROUND_TOP-58, w:46, h:58, vx:0, vy:0, onGround:false, facing:1,
              coyote:0, buffer:0, jumpHeld:false, runPhase:0, blink:0, squash:0, stretch:1, trampHold:false };
@@ -1432,7 +1439,7 @@ function resetWorld(forDemo){
   platforms=[]; pits=[]; weeds=[]; floatPickups=[]; enemies=[]; bongs=[]; stars=[]; cannons=[]; wings=[]; hiddens=[]; balls=[];
   projectiles=[]; bossShots=[]; particles=[]; banners=[];
   genX=0; score=0; lives=3; distance=0; frameCount=0; flash=0; hitTimer=0; hidden=0;
-  dead=false; deadTimer=0; overReason="busted";
+  dead=false; deadTimer=0; overReason="busted"; tut=null;
   speedTimer=0; starTimer=0; flyTimer=0; ammo=0; fireCd=0; level=0; levelFlash=0;
   weapon="joint"; streak=0; chopper=null; gravNow=gravFor(); twistKey=seasonMutator().key; worldCupSkin=(twistKey==="worldcup"); pitHops=0; lastHopPitX=-99999;   // cache gravity + twist + ⚽ skin once (off the physics hot path); clear the ball buff
   chaseX=-540; chaseSpeed=3.05; bribeUsed=false; hanging=false; hangTimer=0; hangX=0; slowmo=0;
@@ -1440,7 +1447,8 @@ function resetWorld(forDemo){
   petX=player.x-70; petY=player.y-70; petFlap=0; petPuffCd=0;   // 🦅 eagle starts just behind/above
   platforms.push({x:-300,y:GROUND_TOP,w:1100,h:VH-GROUND_TOP+260,ground:true});
   genX=760;
-  while (genX < cam.x+VW+1500) generateSegment();
+  if (forTut){ buildTutorialWorld(); }                          // 🎓 hand-scripted lesson map (sets `tut`)
+  else { while (genX < cam.x+VW+1500) generateSegment(); }
   demoMode=!!forDemo;
 }
 
@@ -1460,7 +1468,7 @@ function startGame(){
   addBanner("WANTED!", "Run! The cops are coming — grab weed, bribe at 100", "#ff5a5a", 150);
   addBanner(mut.emoji+" SEASON "+seasonLabel()+" TWIST: "+mut.name, mut.desc, seasonTheme()==="worldcup"?"#ffd54a":"#9fe8ff", 220);   // ⚽ gold World-Cup banner
 }
-function togglePause(){ if(G.scene==="play"){G.scene="paused";G.paused=true;} else if(G.scene==="paused"){G.scene="play";G.paused=false;} }
+function togglePause(){ if(tut) return; if(G.scene==="play"){G.scene="paused";G.paused=true;} else if(G.scene==="paused"){G.scene="play";G.paused=false;} }   // 🎓 the tutorial has no pause (use the cards/EXIT)
 
 function addBanner(title, sub, col, life=120){ banners.push({title, sub, col, life, max:life}); }
 
@@ -1663,9 +1671,87 @@ function mkWings(x,y){ return {x,y,w:42,h:30,taken:false,bob:rnd(0,6.28)}; }
 function mkHidden(x,y){ return {x,y,w:20,h:20,taken:false,bob:rnd(0,6.28),t:rnd(0,6.28)}; }  // secret rank-only collectible
 function inPit(x){ return pits.some(p=> x>=p.x && x<=p.x+p.w); }
 
+// ---------------- 🎓 interactive tutorial ----------------
+// A hand-scripted "practice run": no cops, no game-over, no procedural generation. The map lays out
+// one of every mechanic left→right; a coach caption explains each ZONE as you reach it, and the
+// pickups' own banners reinforce. `tut` drives the captions + the welcome/finish cards.
+const TUT_FINISH_X = 4300;
+function buildTutorialWorld(){
+  const G0 = GROUND_TOP;                       // ground surface y
+  chaseX = player.x-2400;                       // 🎓 no cops anywhere near in the tutorial
+  const kush = (x)=> weeds.push(mkWeed(x, G0-34));   // drop a kush leaf standing on the ground
+
+  // ----- the ground: one long safe strip, with a single teaching PIT near the end -----
+  platforms.push({x:-400, y:G0, w:3720, h:VH-G0+260, ground:true});   // start … just before the pit (ends x=3320)
+  pits.push({x:3320, w:200, lava:false});
+  platforms.push({x:3380, y:G0-64, w:90, h:20, brick:true});          // stepping-stone in the pit (reachable)
+  weeds.push(mkWeed(3415, G0-64-34));                                 // reward for using the stone
+  platforms.push({x:3520, y:G0, w:1240, h:VH-G0+260, ground:true});   // after the pit … to the finish
+
+  // ----- Zone A · grab the kush -----
+  kush(360); kush(470); kush(580);
+  // ----- Zone B · jump onto a block -----
+  platforms.push({x:820, y:G0-92, w:120, h:20, brick:true});
+  weeds.push(mkWeed(862, G0-92-34));                                  // kush sitting on the block
+  kush(1010);
+  // ----- Zone C · stomp a narc -----
+  enemies.push(mkEnemy("cop", 1280));
+  kush(1180); kush(1440);
+  // ----- Zone D · grab a gun, then shoot -----
+  cannons.push({x:1640, y:G0-34, w:40, h:34, bob:rnd(0,6.28), taken:false, kind:"joint"});
+  enemies.push(mkEnemy("dealer", 1920));
+  kush(1770);
+  // ----- Zone E · bong = speed -----
+  bongs.push({x:2180, y:G0-40, w:26, h:40, bob:rnd(0,6.28), taken:false});
+  kush(2070); kush(2300);
+  // ----- Zone F · trampoline → rooftop star -----
+  platforms.push({x:2520, y:G0-14, w:56, h:14, tramp:true, squish:0});
+  platforms.push({x:2630, y:G0-220, w:150, h:20, brick:true});
+  stars.push(mkStar(2696, G0-220-44));
+  kush(2470);
+  // ----- Zone G · kush wings -----
+  wings.push(mkWings(2980, G0-34));
+  kush(2880); kush(3120);
+  // ----- Zone H · the pit (stone already placed above) — kush leads you to it -----
+  kush(3240);
+  // ----- Zone I/J · the cops explainer + run to the finish -----
+  kush(3640); kush(3820); kush(4040);
+  platforms.push({x:TUT_FINISH_X-170, y:G0, w:340, h:1, castleGate:true});   // 🏰 finish gate
+  for (let k=0;k<3;k++) weeds.push(mkWeed(TUT_FINISH_X-40+k*26, G0-34));
+
+  // ----- the coach captions, one per left→right zone -----
+  tut = {
+    modal: "intro",     // start frozen on the welcome / controls card
+    callout: null,
+    finished: false,
+    finishX: TUT_FINISH_X,
+    zones: [
+      { x0:0,    x1:760,  c:"#7CFC6A", t:"🌿  GRAB THE KUSH",   b:"Run right and scoop up the kush leaves — they're your SCORE and your shop money. Grab every one." },
+      { x0:760,  x1:1130, c:"#bfe6ff", t:"⬆  JUMP",             b:"Tap the RIGHT side of the screen (or press SPACE / ↑) to jump. Hop onto the block for the kush on top." },
+      { x0:1130, x1:1560, c:"#ff9d6b", t:"👮  STOMP THE NARC",  b:"Land on top of a narc to squash it. Touching its side HURTS you — so always come down on its head." },
+      { x0:1560, x1:2010, c:"#ffd54a", t:"🔫  GRAB A GUN",      b:"Walk into the crate to pick up a gun, then press 🚬 / F to shoot narcs from a safe distance." },
+      { x0:2010, x1:2440, c:"#7CFC6A", t:"💨  BONG = SPEED",    b:"The bong gives you a speed boost for about 7 seconds — perfect for outrunning the police." },
+      { x0:2440, x1:2860, c:"#ff7bd0", t:"🤸  TRAMPOLINE → ⭐",  b:"Bounce off the trampoline to reach the rooftop, where a Cali Star is waiting. The star makes you INVINCIBLE for ~8s." },
+      { x0:2860, x1:3200, c:"#bfe6ff", t:"🪽  KUSH WINGS",      b:"Grab the wings, then HOLD jump to FLY for about 7 seconds. Float clean over trouble." },
+      { x0:3200, x1:3560, c:"#ff7b7b", t:"⚠  MIND THE PIT",    b:"Don't fall in! Jump across, or hop onto the stepping-stone in the middle. (In here it's safe — in a real run a pit costs a life.)" },
+      { x0:3560, x1:TUT_FINISH_X, c:"#ff5a5a", t:"🚓  THE COPS", b:"In a real run a police line chases from behind. You can ALWAYS outrun it by moving — and 100+ kush auto-bribes them once. Reach the 🏰 gate to finish!" },
+    ],
+  };
+}
+// per-frame tutorial logic: pick the active caption zone + trip the finish card. Called from update().
+function tutTick(){
+  if (!tut || tut.modal) return;                 // a card is up → world frozen, nothing to advance
+  const cx=player.x+player.w/2;
+  if (!tut.finished && cx>=tut.finishX){ tut.finished=true; tut.modal="finish"; tut.callout=null; sfx.level&&sfx.level(); return; }
+  let z=null;
+  for (const zz of tut.zones){ if (cx>=zz.x0 && cx<zz.x1){ z=zz; break; } }
+  tut.callout=z;
+}
+
 // ---------------- update ----------------
 function update(){
   frameCount++;
+  if (tut && tut.modal){ updateParticles(); return; }   // 🎓 world frozen behind a tutorial card (welcome / finish / install)
   if (flash>0) flash--;
   if (levelFlash>0) levelFlash--;
   if (slowmo>0) slowmo--;
@@ -1675,8 +1761,8 @@ function update(){
   // hanging cinematic takes over
   if (hanging){ updateHang(); updateParticles(); return; }
 
-  // generate ahead / cull behind
-  while (genX < cam.x+VW+1500) generateSegment();
+  // generate ahead / cull behind  (the tutorial uses a fixed hand-built map → no procedural spawning)
+  if (!tut) while (genX < cam.x+VW+1500) generateSegment();
   const cull = cam.x-560;
   platforms = platforms.filter(p=> p.x+p.w>cull);
   weeds = weeds.filter(o=>!o.taken && o.x>cull);
@@ -1808,7 +1894,8 @@ function update(){
   if (chopper) updateChopper();
   updateBossShots(invincible);
   updatePickups();
-  updateChase();
+  if (tut){ chaseX=player.x-2400; Music.tense=false; tutTick(); }   // 🎓 no cops in the tutorial; just advance the captions
+  else updateChase();
   if (DB.pet) updatePet();          // 🦅 move eagle + emit joint smoke BEFORE particles age this frame
   updateParticles();
 }
@@ -2136,12 +2223,22 @@ function hurt(){
   if (starTimer>0) return;
   if (speedTimer>0) speedTimer=0;
   streak=0;                          // taking a hit ends the kill streak
+  if (tut){                          // 🎓 tutorial: feedback + knockback, but never lose a life
+    hitTimer=70; sfx.hurt(); flash=8; screenShakeAdd(6); player.vy=-7; player.vx=-player.facing*4;
+    addBanner("OUCH!","Touching a narc hurts — STOMP it from above or SHOOT it","#ff7b7b",100); return;
+  }
   lives--; hitTimer=95; sfx.hurt(); flash=10; screenShakeAdd(10);
   player.vy=-8; player.vx=-player.facing*5;
   if (lives<=0) die("busted");
 }
 function die(reason){
   if (dead||hanging) return;
+  if (tut){                          // 🎓 tutorial never kills — soft-recover back onto solid ground
+    sfx.hurt(); flash=8; screenShakeAdd(5);
+    player.x=Math.max(160, player.x-130); player.y=GROUND_TOP-player.h-4; player.vx=0; player.vy=0;
+    let t=0; while(inPit(player.x+player.w/2)&&t<80){ player.x-=20; t++; }
+    addBanner("WHOOPS!","Pits are deadly in a real run — jump across or use the stone","#ffd54a",120); return;
+  }
   overReason=reason; dead=true; deadTimer=0;
   player.vy = (reason==="fell"||reason==="lava")?Math.max(player.vy,2):-12;
   sfx.die();
@@ -2299,7 +2396,7 @@ function render(){
   else if (G.scene==="over") drawGameOver();
   else if (G.scene==="chat") drawChat();
   else if (G.scene==="paused") drawPaused();
-  if (G.scene==="play") drawMenuButton();
+  if (G.scene==="play"){ if (tut) drawTutorialUI(); else drawMenuButton(); }
 
   syncNameInput();
   syncChatInput();
@@ -2326,14 +2423,12 @@ function drawBackground(th){
     ctx.fillStyle="rgba(255,247,214,.9)"; ctx.beginPath(); ctx.arc(VW*0.78,VH*0.24-cam.y*0.05,46,0,6.28); ctx.fill();
   }
 
-  if (worldCupSkin){
-    drawStadiumBg(level % 4);      // ⚽ 4 distinct stadiums, one per biome slot in the level cycle
-  } else {
-    if (th.id==="city")   drawCityBg(false);
-    else if (th.id==="night") drawCityBg(true);
-    else if (th.id==="desert") drawDesertBg();
-    else if (th.id==="lava") drawLavaBg();
-  }
+  // ⚽ World-Cup season now KEEPS the real biome backdrop (the stadium panel + green pitch read as
+  // too busy). The football flavour lives on the jump-on BLOCKS + enemy kits instead, not the sky.
+  if (th.id==="city")   drawCityBg(false);
+  else if (th.id==="night") drawCityBg(true);
+  else if (th.id==="desert") drawDesertBg();
+  else if (th.id==="lava") drawLavaBg();
 
   drawClouds(th);
 }
@@ -2515,25 +2610,16 @@ function drawPlatforms(th){
   }
 }
 function drawGround(p,th){
-  if (worldCupSkin){                              // ⚽ football pitch — LOCAL override only, THEMES untouched (auto-reverts next season)
-    th={ id:"pitch", grass:"#1f8a3a", grassDk:"#13682a", soil:"#0f5824", soilLine:"rgba(255,255,255,.10)", accent:th.accent };
-  }
   ctx.fillStyle=th.grass; ctx.fillRect(p.x,p.y,p.w,16);
   ctx.fillStyle=th.grassDk; ctx.fillRect(p.x,p.y+12,p.w,6);
   ctx.fillStyle=th.soil; ctx.fillRect(p.x,p.y+16,p.w,p.h-16);
   ctx.strokeStyle=th.soilLine; ctx.lineWidth=2;
   for(let yy=p.y+18;yy<p.y+Math.min(p.h,160);yy+=20){ ctx.beginPath(); ctx.moveTo(p.x,yy); ctx.lineTo(p.x+p.w,yy); ctx.stroke(); }
-  if (worldCupSkin){                              // mowing stripes (alt bands keyed to world-x) + a halfway line
-    for(let xx=Math.floor(p.x/80)*80; xx<p.x+p.w; xx+=80){
-      if(((xx/80)|0)%2){ ctx.fillStyle="rgba(255,255,255,.05)"; ctx.fillRect(Math.max(xx,p.x),p.y,Math.min(80,p.x+p.w-xx),16); }
-      if(((xx/80)|0)%8===0){ ctx.fillStyle="rgba(255,255,255,.55)"; ctx.fillRect(xx,p.y,3,16); }
-    }
-  } else {
-    if (th.id==="city"||th.id==="night"){ ctx.fillStyle=th.grassDk; for(let xx=p.x+6;xx<p.x+p.w;xx+=22){ ctx.fillRect(xx,p.y-4,3,6); ctx.fillRect(xx+5,p.y-6,3,8);} }
-    if (th.id==="desert"){ ctx.fillStyle="#cf9a3a"; for(let xx=p.x+10;xx<p.x+p.w;xx+=60){ ctx.fillRect(xx,p.y-8,4,10); ctx.fillRect(xx-4,p.y-3,12,3);} }
-  }
+  if (th.id==="city"||th.id==="night"){ ctx.fillStyle=th.grassDk; for(let xx=p.x+6;xx<p.x+p.w;xx+=22){ ctx.fillRect(xx,p.y-4,3,6); ctx.fillRect(xx+5,p.y-6,3,8);} }
+  if (th.id==="desert"){ ctx.fillStyle="#cf9a3a"; for(let xx=p.x+10;xx<p.x+p.w;xx+=60){ ctx.fillRect(xx,p.y-8,4,10); ctx.fillRect(xx-4,p.y-3,12,3);} }
 }
 function drawBrick(p){
+  if (worldCupSkin){ drawWorldCupBlock(p); return; }   // ⚽ World-Cup season: jump-on blocks become soccer panels
   ctx.fillStyle="#c8782e"; ctx.fillRect(p.x,p.y,p.w,p.h);
   ctx.fillStyle="#a85e1d"; ctx.fillRect(p.x,p.y+p.h-5,p.w,5);
   ctx.fillStyle="#e89a52"; ctx.fillRect(p.x,p.y,p.w,4);
@@ -2578,10 +2664,28 @@ function drawSkybridge(p){
   ctx.beginPath(); ctx.moveTo(p.x+p.w*0.42,p.y+p.h); ctx.lineTo(p.x+p.w*0.5,p.y+20); ctx.moveTo(p.x+p.w*0.58,p.y+p.h); ctx.lineTo(p.x+p.w*0.5,p.y+20); ctx.stroke();
 }
 function drawBlock(p){
+  if (worldCupSkin){ drawWorldCupBlock(p); return; }   // ⚽ World-Cup season: jump-on blocks become soccer panels
   ctx.fillStyle="#d99a3a"; ctx.fillRect(p.x,p.y,p.w,p.h);
   ctx.fillStyle="#b87a1d"; ctx.fillRect(p.x,p.y+p.h-4,p.w,4); ctx.fillRect(p.x,p.y,4,p.h);
   ctx.fillStyle="#f0c060"; ctx.fillRect(p.x+2,p.y+2,p.w-4,3);
   ctx.fillStyle="#7a4a10"; for(const [dx,dy] of [[6,6],[p.w-12,6],[6,p.h-12],[p.w-12,p.h-12]]) ctx.fillRect(p.x+dx,p.y+dy,4,4);
+}
+// ⚽ World-Cup season skin for jump-on BLOCKS: a clean white soccer-ball panel with gold trim +
+// evenly-spaced black pentagons. Reads as "football" without the busy stadium backdrop.
+function drawWorldCupBlock(p){
+  ctx.fillStyle="#f4f6fa"; ctx.fillRect(p.x,p.y,p.w,p.h);              // white panel
+  ctx.fillStyle="#c4cdda"; ctx.fillRect(p.x,p.y+p.h-4,p.w,4);         // soft underside shadow
+  ctx.fillStyle="#ffd54a"; ctx.fillRect(p.x,p.y,p.w,3);               // gold top trim
+  const cy=p.y+p.h/2, r=Math.max(3, Math.min(5,(p.h-8)/2));
+  ctx.fillStyle="#1b2230";                                            // black soccer pentagons spaced along
+  for(let xx=p.x+15; xx<=p.x+p.w-9; xx+=28) pentaDot(xx, cy, r);
+  ctx.strokeStyle="rgba(27,34,48,.28)"; ctx.lineWidth=1;              // faint seams linking the pentagons
+  for(let xx=p.x+15; xx<=p.x+p.w-23; xx+=28){ ctx.beginPath(); ctx.moveTo(xx+r,cy); ctx.lineTo(xx+28-r,cy); ctx.stroke(); }
+}
+function pentaDot(cx,cy,r){
+  ctx.beginPath();
+  for(let i=0;i<5;i++){ const a=-Math.PI/2 + i*2*Math.PI/5, x=cx+Math.cos(a)*r, y=cy+Math.sin(a)*r; if(i===0)ctx.moveTo(x,y); else ctx.lineTo(x,y); }
+  ctx.closePath(); ctx.fill();
 }
 function drawCloudPlat(p){
   ctx.fillStyle="rgba(255,255,255,.95)";
@@ -3441,6 +3545,17 @@ function button(x,y,w,h,label,action,col){
   ctx.strokeStyle=col? col.replace(/[\d.]+\)$/,"0.9)"):"rgba(124,252,106,.9)"; ctx.lineWidth=2; roundRect(x,y,w,h,12); ctx.stroke();
   ctx.fillStyle="#fff"; ctx.font="bold 20px 'Trebuchet MS'"; ctx.textAlign="center"; ctx.textBaseline="middle"; ctx.fillText(label,x+w/2,y+h/2); ctx.textAlign="left"; ctx.textBaseline="alphabetic";
 }
+// compact pill button with an AUTO-FITTING label (button() hard-codes 20px and clips long labels) —
+// used for the 🎓 tutorial's top control row.
+function pillBtn(x,y,w,h,label,action,col){
+  uiButtons.push({x,y,w,h,action});
+  const r=Math.min(10,h/2);
+  ctx.fillStyle=col||"rgba(8,12,24,.66)"; roundRect(x,y,w,h,r); ctx.fill();
+  ctx.strokeStyle="rgba(255,255,255,.35)"; ctx.lineWidth=1.5; roundRect(x,y,w,h,r); ctx.stroke();
+  ctx.fillStyle="#fff"; ctx.font="bold "+fitFontSize(label, Math.min(14,h-8), w-12, "bold")+"px 'Trebuchet MS'";
+  ctx.textAlign="center"; ctx.textBaseline="middle"; ctx.fillText(label, x+w/2, y+h/2+0.5);
+  ctx.textAlign="left"; ctx.textBaseline="alphabetic";
+}
 // 💬 unread-chat badge — a pulsing red pip + count at a button's top-right corner (drawn AFTER the button)
 function drawChatBadge(bx, by, bw){
   const n=Chat.unread(); if(!n) return;
@@ -3781,6 +3896,20 @@ function fitFontSize(text, basePx, maxW, weight){
   const wpx=ctx.measureText(text).width;
   return (wpx>maxW && wpx>0) ? Math.max(9, Math.floor(basePx*maxW/wpx)) : basePx;
 }
+// the 3 "install it like a real app" steps — shared by the first-launch HOW-TO screen and the
+// 🎓 tutorial's INSTALL card. Steps 1–2 auto check-off once you're running the installed app.
+function installSteps(){
+  const here = isStandalone();
+  const installLine = "Open the Share menu in your browser, then press “Add to Home Screen”.";
+  return [
+    [ here?"✅":"1️⃣", "INSTALL THE APP",
+      here ? "Done — you’re running the installed app." : installLine+"  This unlocks TRUE fullscreen." ],
+    [ here?"✅":"2️⃣", "RELAUNCH FROM THE ICON",
+      here ? "Done — you launched from the home-screen icon." : "Close the browser, then relaunch the game from its new home-screen icon." ],
+    [ "📱", "TURN YOUR PHONE SIDEWAYS",
+      "Turn your phone sideways (landscape), with rotation lock OFF, for the best gameplay." ],
+  ];
+}
 function drawHowto(){
   // backdrop (same green night vibe as the intro), then a soft dim
   const g=ctx.createLinearGradient(0,0,0,VH); g.addColorStop(0,"#0a2114"); g.addColorStop(.6,"#06120b"); g.addColorStop(1,"#030704");
@@ -3797,17 +3926,7 @@ function drawHowto(){
   ctx.fillStyle="#cfe0ff"; ctx.font=fitFontSize("A few quick steps for the best run:",13,inner,"")+"px 'Trebuchet MS'";
   ctx.fillText("A few quick steps for the best run:", cx, 72);
 
-  const here = isStandalone();
-  const installLine = "Open the Share menu in your browser, then press “Add to Home Screen”.";
-  // all THREE instructions are always shown; when already installed, steps 1–2 are checked off
-  const steps = [
-    [ here?"✅":"1️⃣", "INSTALL THE APP",
-      here ? "Done — you’re running the installed app." : installLine+"  This unlocks TRUE fullscreen." ],
-    [ here?"✅":"2️⃣", "RELAUNCH FROM THE ICON",
-      here ? "Done — you launched from the home-screen icon." : "Close the browser, then relaunch the game from its new home-screen icon." ],
-    [ "📱", "TURN YOUR PHONE SIDEWAYS",
-      "Turn your phone sideways (landscape), with rotation lock OFF, for the best gameplay." ],
-  ];
+  const steps = installSteps();   // shared with the 🎓 tutorial's INSTALL card
 
   const numX=x0+pad, indent=26, textX=x0+pad+indent, textW=inner-indent;
   const topY=92, botY=VH-78-10;                              // steps live in this vertical band (above the button)
@@ -3833,6 +3952,126 @@ function drawHowto(){
   button(bx, VH-78, bw, 46, "GOT IT  🌿", ()=>leaveHowto());
   ctx.textAlign="center"; ctx.fillStyle="#8298ba"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText("tap GOT IT or press ENTER", cx, VH-20);
   ctx.textAlign="left";
+}
+
+// ======================================================================
+//  🎓 INTERACTIVE TUTORIAL — control + on-canvas overlay
+// ======================================================================
+function startTutorial(){
+  resetWorld(false, true);                 // builds the scripted map + sets `tut` (modal:"intro")
+  touchCtl.clear(); stickId=null; hideJoy(); keys.jump=keys.left=keys.right=keys.fire=false;
+  G.scene="play"; G.paused=false;
+  if (ac() && actx.state==="suspended") actx.resume();
+  Music.setTheme(0); Music.start();
+}
+function exitTutorial(){ tut=null; G.scene="title"; G.paused=false; Board.refresh(); }
+// dismiss a card → the world starts running (drop any input held while tapping the card)
+function tutResume(){ keys.jump=keys.left=keys.right=keys.fire=false; touchCtl.clear(); stickId=null; hideJoy(); tut.modal=null; }
+
+function drawTutorialUI(){
+  if (tut.modal){ drawTutorialCard(tut.modal); return; }   // a card owns the whole screen
+
+  // top control row (replaces the ≡ MENU row during the tutorial). Landscape sits in the same clear
+  // slot the normal menu row uses (right of the HUD mini-logo, left of the police panel).
+  if (VW<720){
+    const by = uiPortrait ? 66+safeTop : 14+safeTop;
+    pillBtn(VW-160, by, 80, 22, "📱 INSTALL", ()=>{ tut.modal="install"; });
+    drawSoundButton(VW-76, by, 30, 22);
+    pillBtn(VW-42, by, 36, 22, "✕", exitTutorial, "rgba(255,90,90,.32)");
+  } else {
+    pillBtn(VW/2-58, 8, 96, 28, "📱 INSTALL", ()=>{ tut.modal="install"; });
+    drawSoundButton(VW/2+42, 8, 38, 28);
+    pillBtn(VW/2+84, 8, 96, 28, "✕  EXIT", exitTutorial, "rgba(255,90,90,.3)");
+  }
+
+  // coach caption (bottom-centre, above the on-screen touch controls)
+  const z=tut.callout; if (!z) return;
+  const W=Math.min(560, VW-28), X=(VW-W)/2;
+  const bodyFont="13px 'Trebuchet MS'";
+  const lines=wrapLines(z.b, bodyFont, W-28);
+  const H=30 + lines.length*17 + 10, Y=VH-94-H;
+  ctx.fillStyle="rgba(8,14,26,.92)"; roundRect(X,Y,W,H,12); ctx.fill();
+  ctx.strokeStyle=z.c; ctx.lineWidth=2; roundRect(X,Y,W,H,12); ctx.stroke();
+  ctx.textAlign="left"; ctx.fillStyle=z.c; ctx.font="bold "+fitFontSize(z.t,15,W-28,"bold")+"px 'Trebuchet MS'"; ctx.fillText(z.t, X+14, Y+22);
+  ctx.fillStyle="#dfe8f4"; ctx.font=bodyFont; let yy=Y+42; for(const ln of lines){ ctx.fillText(ln, X+14, yy); yy+=17; }
+  ctx.textBaseline="alphabetic";
+}
+
+// modal cards: welcome/controls ("intro"), you're-ready ("finish"), install steps ("install").
+// All three SHRINK-TO-FIT: body font scales down until title + body + button band fit the screen,
+// so nothing ever overlaps on a narrow portrait phone (VW≈280).
+function drawTutorialCard(kind){
+  ctx.fillStyle="rgba(4,8,16,.8)"; ctx.fillRect(0,0,VW,VH);
+  ctx.textBaseline="alphabetic";
+  const W=Math.min(560, VW-24), X=(VW-W)/2, cx=VW/2, inner=W-36;
+  if (kind==="install"){ drawTutInstallCard(X,W,inner,cx); return; }
+
+  const intro = (kind==="intro");
+  const title = intro ? "👋  WELCOME — PRACTICE RUN" : "🎉  YOU’RE READY!";
+  const body = intro ? [
+      ["#cfe0ff","A safe practice run — no cops, no game-over. Just learn the moves."],
+      ["#bfe6ff","📱 Phone: left thumb = run · tap the right = JUMP · 🚬 to shoot."],
+      ["#bfe6ff","⌨ Keyboard: ← → run · SPACE / ↑ jump · F shoot."],
+      ["#ffd54a","Follow the green tips and grab every pickup. Let’s go! 🌿"],
+    ] : [
+      ["#cfe0ff","Nice run! You’ve met the kush, jumps, narcs, guns and power-ups."],
+      ["#bfe6ff","The police chase from behind — keep moving and you’ll always escape."],
+      ["#ffd54a","Want it fullscreen like a real app? Tap “Install”. Otherwise — hit Play!"],
+    ];
+  const nBtn = intro ? 2 : 3, btnGap=10, titleH=32, gap=10;
+  let bodyPx=14, lineH=19, btnH=46;
+  const maxH=VH-22;
+  const meas=()=>{ const wr=body.map(b=>wrapLines(b[1], bodyPx+"px 'Trebuchet MS'", inner));
+    let bh=0; for(const ls of wr) bh+=ls.length*lineH+gap;
+    const bandH=nBtn*btnH+(nBtn-1)*btnGap; return {wr,bandH,total:20+titleH+bh+14+bandH+16}; };
+  let m=meas();
+  while (m.total>maxH && bodyPx>10){ bodyPx--; lineH=bodyPx+5; if(btnH>40)btnH-=2; m=meas(); }
+  const H=Math.min(maxH, m.total), Y=(VH-H)/2;
+  panel(X, Y, W, H);
+  ctx.textAlign="center"; ctx.fillStyle="#7CFC6A";
+  ctx.font="bold "+fitFontSize(title,22,inner,"bold")+"px 'Trebuchet MS'"; ctx.fillText(title, cx, Y+30);
+  ctx.textAlign="left";
+  let yy=Y+20+titleH;
+  for (let i=0;i<body.length;i++){ ctx.fillStyle=body[i][0]; ctx.font=bodyPx+"px 'Trebuchet MS'";
+    for (const ln of m.wr[i]){ ctx.fillText(ln, X+18, yy); yy+=lineH; } yy+=gap; }
+
+  const bx=X+18, bw=W-36; let byb=Y+H-16-m.bandH;
+  if (intro){
+    button(bx, byb, bw, btnH, "▶  START", ()=>tutResume()); byb+=btnH+btnGap;
+    button(bx, byb, bw, btnH, "≡  SKIP TO MENU", exitTutorial, "rgba(255,255,255,.14)");
+  } else {
+    button(bx, byb, bw, btnH, "▶  PLAY FOR REAL", ()=>{ tut=null; startGame(); }); byb+=btnH+btnGap;
+    button(bx, byb, bw, btnH, "📱  INSTALL THE APP", ()=>{ tut.modal="install"; }, "rgba(88,166,255,.2)"); byb+=btnH+btnGap;
+    button(bx, byb, bw, btnH, "≡  MAIN MENU", exitTutorial, "rgba(255,255,255,.14)");
+  }
+}
+function drawTutInstallCard(X,W,inner,cx){
+  const steps=installSteps();
+  const titleH=30, stepGap=12, btnGap=10;
+  let bodyPx=13, lineH=17, stepTitleH=20, btnH=46;
+  const maxH=VH-18;
+  const meas=()=>{ const wr=steps.map(s=>wrapLines(s[2], bodyPx+"px 'Trebuchet MS'", inner-26));
+    let sh=0; for(const ls of wr) sh+=stepTitleH+ls.length*lineH+stepGap;
+    const bandH=2*btnH+btnGap; return {wr,bandH,total:20+titleH+sh+10+bandH+16}; };
+  let m=meas();
+  while (m.total>maxH && bodyPx>10){ bodyPx--; lineH=bodyPx+4; if(btnH>40)btnH-=2; m=meas(); }
+  const H=Math.min(maxH, m.total), Y=(VH-H)/2;
+  panel(X, Y, W, H);
+  ctx.textAlign="center"; ctx.fillStyle="#7CFC6A";
+  ctx.font="bold "+fitFontSize("📱  INSTALL THE APP",22,inner,"bold")+"px 'Trebuchet MS'"; ctx.fillText("📱  INSTALL THE APP", cx, Y+30);
+  ctx.textAlign="left";
+  let yy=Y+20+titleH;
+  for (let i=0;i<steps.length;i++){
+    ctx.font="18px 'Trebuchet MS'"; ctx.fillStyle="#fff"; ctx.fillText(steps[i][0], X+18, yy);
+    ctx.font="bold "+fitFontSize(steps[i][1],14,inner-30,"bold")+"px 'Trebuchet MS'"; ctx.fillStyle="#ffd54a"; ctx.fillText(steps[i][1], X+46, yy);
+    yy+=stepTitleH;
+    ctx.font=bodyPx+"px 'Trebuchet MS'"; ctx.fillStyle="#cfd8e8";
+    for (const ln of m.wr[i]){ ctx.fillText(ln, X+46, yy); yy+=lineH; }
+    yy+=stepGap;
+  }
+  const bx=X+18, bw=W-36; let byb=Y+H-16-m.bandH;
+  button(bx, byb, bw, btnH, "◀  BACK", ()=>{ if (tut.finished) tut.modal="finish"; else tutResume(); }); byb+=btnH+btnGap;
+  button(bx, byb, bw, btnH, "▶  PLAY FOR REAL", ()=>{ tut=null; startGame(); }, "rgba(124,252,106,.18)");
 }
 
 // ---- scrollable high-score list (title + game over): shows up to `total` ranks inside a fixed
@@ -3941,7 +4180,7 @@ function drawTitle(){
     button(Lx, 318, colW, 48, "▶  PLAY", ()=>startGame());
     button(Lx, 372, colW/2-4, 38, "🛍  SHOP", ()=>openShop(), "rgba(255,213,74,.18)");
     button(Lx+colW/2+4, 372, colW/2-4, 38, "🎖  PASS", ()=>openPass(), "rgba(201,160,255,.20)");
-    button(Lx, 416, colW/2-4, 38, "📖  HOW TO", ()=>openGuide("title"), "rgba(88,166,255,.18)");
+    button(Lx, 416, colW/2-4, 38, "🎓  HOW TO", ()=>startTutorial(), "rgba(88,166,255,.18)");
     button(Lx+colW/2+4, 416, colW/2-4, 38, "💬  CHAT", ()=>openChat(), "rgba(88,166,255,.18)"); drawChatBadge(Lx+colW/2+4, 416, colW/2-4);
     ctx.textAlign="center"; ctx.fillStyle="#8298ba"; ctx.font="11px 'Trebuchet MS'"; ctx.fillText("← → run · SPACE jump · F shoot", Lcx, 470);
     linkText("ℹ️  How to play fullscreen", Lcx, 494, ()=>{ G.scene="howto"; });
@@ -3958,7 +4197,7 @@ function drawTitle(){
     button(ix, 236, iw, 40, "▶  PLAY", ()=>startGame());
     button(ix, 280, iw/2-4, 34, "🛍  SHOP", ()=>openShop(), "rgba(255,213,74,.18)");
     button(ix+iw/2+4, 280, iw/2-4, 34, "🎖  PASS", ()=>openPass(), "rgba(201,160,255,.20)");
-    button(ix, 318, iw/2-4, 32, "📖  HOW TO", ()=>openGuide("title"), "rgba(88,166,255,.18)");
+    button(ix, 318, iw/2-4, 32, "🎓  HOW TO", ()=>startTutorial(), "rgba(88,166,255,.18)");
     button(ix+iw/2+4, 318, iw/2-4, 32, "💬  CHAT", ()=>openChat(), "rgba(88,166,255,.18)"); drawChatBadge(ix+iw/2+4, 318, iw/2-4);
     drawBoardTabs(cx, 356, true);
     ctx.textAlign="center"; ctx.fillStyle="#8fa6c8"; ctx.font="10px 'Trebuchet MS'";
